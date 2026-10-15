@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "OpenCode Go 用量",
-    "description": "在侧边栏底部显示 Go 套餐的时段、本周、本月用量占比与重置倒计时。"
+    "title": "OpenCode Go 侧边栏",
+    "description": "侧边栏底部三个单元格：Go 套餐用量、模型目录与快照差异、DSH 版本检查与更新日志。"
   }
 }

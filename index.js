@@ -38,7 +38,7 @@ const USAGE_PATH = `${ROUTE_PREFIX}/usage`;
 const MODELS_PATH = `${ROUTE_PREFIX}/models`;
 const VERSION_PATH = `${ROUTE_PREFIX}/version`;
 /** Attribution header, so upstream can tell this client from a bare SDK. */
-const USER_AGENT = 'dsh-opencode-go-quota/1.1.0';
+const USER_AGENT = 'dsh-opencode-go-quota/1.2.0';
 
 /** The three metered windows, in the order the popover lists them. */
 const WINDOW_IDS = ['rolling', 'weekly', 'monthly'];
@@ -545,11 +545,26 @@ export function apply(ctx, config) {
         beyondLatest: latest !== null && compareVersions(release.version, latest) > 0,
       }),
     );
+    /* Publish date of every tag a channel names: the release feed is the
+       authority, npm's `time` map covers a tag the feed does not carry. */
+    const publishedAt = new Map();
+    if (feed.ok === true) {
+      for (const release of feed.releases) {
+        if (!publishedAt.has(release.version)) publishedAt.set(release.version, release.publishedAt);
+      }
+    }
+    const channelDates = {};
+    for (const name of Object.keys(channels)) {
+      const version = channels[name];
+      const date = isoOrNull(publishedAt.get(version)) ?? isoOrNull(times[version]);
+      if (date !== null) channelDates[name] = date;
+    }
     return {
       ok: true,
       fetchedAt: new Date().toISOString(),
       current: current,
       channels: channels,
+      channelDates: channelDates,
       latest: latest,
       latestPublishedAt: latest === null ? null : isoOrNull(times[latest]),
       updateAvailable: current !== null && latest !== null && compareVersions(latest, current) > 0,

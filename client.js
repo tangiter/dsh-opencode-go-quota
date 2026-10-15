@@ -8,11 +8,14 @@
  *               the highest share beside them when the column renders wide, and
  *               a hover popover with a bar, the remaining share and a live reset
  *               countdown per window.
- *   [◫ 37]      the OpenCode mark — a click popover comparing the live model
+ *   [◫ 37]      the OpenCode mark — a hover popover comparing the live model
  *               catalog against the published documentation and against the
  *               previous visit's snapshot.
  *   [Ver •]     the running Harness version against published releases, with
  *               the bilingual changelog of everything newer than it.
+ *
+ * All three open on hover and close on leaving; a click only re-asserts the
+ * open state.
  *
  * Every number comes from the Host half's same-origin routes, never from a model
  * call or a session projection: this is ambient process state, not session
@@ -35,14 +38,17 @@ window.__ModuleLoader__.load({
     const USAGE_ROUTE = '/opencode-go-quota/usage';
     const MODELS_ROUTE = '/opencode-go-quota/models';
     const VERSION_ROUTE = '/opencode-go-quota/version';
+    /** Where the model docs live; the popover links here rather than reciting them. */
+    const DOCS_URL = 'https://opencode.ai/docs/go';
     /** How often the page re-reads the meters; the Host caches behind it. */
     const POLL_MS = 60000;
     /** Countdown refresh cadence. */
     const TICK_MS = 30000;
-    /** How long a catalog or version answer stays good in the page. */
-    const INFO_TTL_MS = 900000;
-    /** A popover re-reads its route on open once its answer is older than this. */
-    const REOPEN_REFRESH_MS = 60000;
+    /**
+     * Catalog and version answers are read once per page load and then again
+     * only when the reader asks, so they stay good for the whole page session.
+     */
+    const INFO_TTL_MS = Infinity;
     /** Popover widths, before viewport clamping. */
     const QUOTA_WIDTH = 268;
     const MODELS_WIDTH = 320;
@@ -69,7 +75,6 @@ window.__ModuleLoader__.load({
       updatedAt: 'updated {time}',
       checkedAt: 'checked {time}',
       footer: 'Go plan · opencode.ai/console',
-      modelsFooter: 'opencode.ai/docs/go · model catalog',
       versionFooter: 'npm @deepseek-ai/dsh · github releases',
       retryHint: 'The Host could not reach the source.',
       errNoCredential: 'No credential is configured for {env}.',
@@ -89,17 +94,19 @@ window.__ModuleLoader__.load({
       dayHour: '{d} d {h} h',
       hint: '5-hour {a}% · weekly {b}% · monthly {c}%',
       modelsTitle: 'OpenCode Go models',
-      modelsHint: 'Model catalog and what changed',
-      modelsCount: '{n} models',
-      docsSection: 'Not in the docs',
-      docsBaseline: 'baseline {date} · {n} documented',
-      docsNone: 'The catalog matches the docs',
-      docsMissing: 'Documented but absent: {ids}',
-      sinceSection: 'Since your last look',
-      sinceFirst: 'Baseline recorded ({n} models). Additions and removals will show up here.',
-      sinceAt: 'snapshot {time}',
-      sinceNone: 'No additions or removals',
-      allSection: 'All models',
+      modelsHint: 'Every model the Go plan currently offers',
+      refresh: 'Refresh',
+      liveSection: 'Every model (live)',
+      liveEmpty: 'none',
+      snapSection: 'Last snapshot',
+      snapFirst: 'first read',
+      snapEmpty: 'nothing recorded yet',
+      snapFirstNote: 'First read — this list is now the snapshot ({n} models). Press refresh to compare.',
+      diffSection: 'Difference',
+      added: 'Added',
+      removed: 'Removed',
+      none: 'none',
+      docsLink: 'Go docs',
       versionTitle: 'DSH version',
       versionHint: 'Check for updates',
       verCurrent: 'Current',
@@ -110,8 +117,6 @@ window.__ModuleLoader__.load({
       verNewer: '{n} releases newer than this build',
       verNone: 'Nothing published is newer than this build',
       verChannelBeyond: 'newer than latest',
-      verRegistryFail: 'npm versions unreadable',
-      verReleasesFail: 'release notes unreadable',
       verChanges: 'What changed',
       verNoNotes: '(no notes published)',
     };
@@ -130,7 +135,6 @@ window.__ModuleLoader__.load({
         updatedAt: '{time} 更新',
         checkedAt: '{time} 检查',
         footer: 'Go 套餐 · opencode.ai/console',
-        modelsFooter: 'opencode.ai/docs/go · 模型目录',
         versionFooter: 'npm @deepseek-ai/dsh · github releases',
         retryHint: 'Host 未能读取数据源。',
         errNoCredential: '没有为 {env} 配置凭据。',
@@ -150,17 +154,19 @@ window.__ModuleLoader__.load({
         dayHour: '{d} 天 {h} 小时',
         hint: '时段 {a}% · 本周 {b}% · 本月 {c}%',
         modelsTitle: 'OpenCode Go 模型',
-        modelsHint: '模型目录，以及更新了哪些模型',
-        modelsCount: '{n} 个模型',
-        docsSection: '官方文档未列出',
-        docsBaseline: '基准 {date} · 文档 {n} 个',
-        docsNone: '接口与文档一致',
-        docsMissing: '文档有、接口没有：{ids}',
-        sinceSection: '自上次查看',
-        sinceFirst: '已记录基线（{n} 个模型），之后新增或下架的会出现在这里。',
-        sinceAt: '基线 {time}',
-        sinceNone: '没有新增或下架',
-        allSection: '全部模型',
+        modelsHint: 'Go 套餐当前提供的全部模型',
+        refresh: '刷新',
+        liveSection: '全部模型（实时）',
+        liveEmpty: '无',
+        snapSection: '上次获取（快照）',
+        snapFirst: '首次',
+        snapEmpty: '尚无快照',
+        snapFirstNote: '首次获取，已把本次清单记为快照（{n} 个）。之后点刷新即可对比。',
+        diffSection: '差异对比',
+        added: '新增',
+        removed: '下架',
+        none: '无',
+        docsLink: 'Go 官方文档',
         versionTitle: 'DSH 版本',
         versionHint: '检查更新',
         verCurrent: '当前',
@@ -171,8 +177,6 @@ window.__ModuleLoader__.load({
         verNewer: '比当前新的版本 {n} 个',
         verNone: '当前版本已是最新发布',
         verChannelBeyond: '晚于 latest',
-        verRegistryFail: '读不到 npm 版本',
-        verReleasesFail: '读不到更新说明',
         verChanges: '更新内容',
         verNoNotes: '（该版本没有发布说明）',
       },
@@ -180,87 +184,128 @@ window.__ModuleLoader__.load({
     };
 
     const CSS = [
+      /* Cell chrome copies the host's own sidebar-foot trigger and the model
+         selector's trigger: no border, no background, host radius and hover
+         token, host focus ring. Nothing here is an invented value. */
       '.dshogq-wrap{display:inline-flex;align-items:center;position:relative;flex:0 0 auto;}',
-      '.dshogq-cell{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 7px;border-radius:8px;',
-      'border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;',
-      'font-size:11px;line-height:1;font-variant-numeric:tabular-nums;cursor:pointer;}',
-      '.dshogq-cell:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);}',
-      '.dshogq-cell[data-open="true"]{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);}',
-      '.dshogq-cell:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;}',
-      '.dshogq-bars{display:flex;align-items:stretch;gap:2px;height:15px;}',
-      '.dshogq-bar{position:relative;width:3px;border-radius:2px;background:var(--dsw-alias-border-l1);overflow:hidden;}',
-      '.dshogq-bar>i{position:absolute;left:0;right:0;bottom:0;display:block;border-radius:2px;',
-      'background:var(--dsw-alias-state-idle-primary);transition:height .25s ease;}',
+      '.dshogq-cell{display:inline-flex;align-items:center;gap:4px;height:28px;padding:0 8px;',
+      'border-radius:var(--dsw-radius-sm);border:none;outline:none;background:0 0;cursor:pointer;',
+      'color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;font-weight:400;line-height:20px;',
+      'white-space:nowrap;font-variant-numeric:tabular-nums;}',
+      '.dshogq-cell[data-icon="true"]{padding:0 6px;}',
+      '.dshogq-cell:hover,.dshogq-cell[data-open="true"]{background:var(--dsw-alias-interactive-bg-hover);}',
+      '.dshogq-cell:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));}',
+      '.dshogq-bars{display:flex;align-items:stretch;gap:2px;height:14px;flex:none;}',
+      '.dshogq-bar{position:relative;width:2px;border-radius:var(--dsw-radius-xs);',
+      'background:var(--dsw-alias-border-l1);overflow:hidden;}',
+      '.dshogq-bar>i{position:absolute;left:0;right:0;bottom:0;display:block;border-radius:var(--dsw-radius-xs);',
+      'background:var(--dsw-alias-state-idle-primary);transition:height .2s var(--ds-ease-in-out);}',
       '.dshogq-bar[data-level="normal"]>i{background:var(--dsw-alias-brand-primary);}',
       '.dshogq-bar[data-level="warn"]>i{background:var(--dsw-alias-state-warn-primary);}',
       '.dshogq-bar[data-level="critical"]>i,.dshogq-bar[data-level="blocked"]>i{background:var(--dsw-alias-state-error-primary);}',
-      '.dshogq-pct{font-weight:600;font-size:11px;}',
-      '.dshogq-pct[data-level="normal"]{color:var(--dsw-alias-brand-primary);}',
-      '.dshogq-pct[data-level="warn"]{color:var(--dsw-alias-state-warn-primary);}',
-      '.dshogq-pct[data-level="critical"],.dshogq-pct[data-level="blocked"]{color:var(--dsw-alias-state-error-primary);}',
-      '.dshogq-celltext{font-weight:600;font-size:11px;letter-spacing:.02em;}',
-      '.dshogq-marksvg{display:block;}',
-      '.dshogq-badge{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-warn-primary);',
-      'margin-left:1px;flex:0 0 auto;}',
-      '.dshogq-pop{position:fixed;z-index:2147483000;box-sizing:border-box;padding:11px 12px 10px;border-radius:12px;',
-      'background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);',
-      'box-shadow:0 14px 34px rgba(0,0,0,.3);font-size:12px;line-height:1.45;}',
-      '.dshogq-head{display:flex;align-items:baseline;gap:8px;}',
-      '.dshogq-title{font-weight:600;font-size:12.5px;}',
-      '.dshogq-updated{margin-left:auto;font-size:10.5px;color:var(--dsw-alias-label-secondary);}',
-      '.dshogq-rows{margin-top:6px;}',
-      '.dshogq-row{padding:7px 0;display:flex;flex-direction:column;gap:6px;}',
-      '.dshogq-row+.dshogq-row{border-top:1px solid var(--dsw-alias-border-l1);}',
+      '.dshogq-celltext{color:var(--dsw-alias-label-primary);}',
+      '.dshogq-celltext[data-level="normal"]{color:var(--dsw-alias-brand-primary);}',
+      '.dshogq-celltext[data-level="warn"]{color:var(--dsw-alias-state-warn-primary);}',
+      '.dshogq-celltext[data-level="critical"],.dshogq-celltext[data-level="blocked"]{color:var(--dsw-alias-state-error-primary);}',
+      '.dshogq-marksvg{display:block;flex:none;}',
+      '.dshogq-refresh{display:inline-flex;align-items:center;justify-content:center;flex:none;',
+      'margin-left:6px;width:20px;height:20px;padding:0;border-radius:var(--dsw-radius-xs);',
+      'border:none;outline:none;background:0 0;color:var(--dsw-alias-label-tertiary);cursor:pointer;}',
+      '.dshogq-refresh:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);}',
+      '.dshogq-refresh:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));}',
+      '.dshogq-refresh[data-busy="true"]{opacity:.4;cursor:default;}',
+      '.dshogq-badge{width:5px;height:5px;border-radius:50%;background:var(--dsw-alias-state-success-primary);flex:none;}',
+      /* Popover chrome copies the host's menu: no border, one elevation token,
+         4px padding, .5px hairlines, host scrollbar tokens, hidden overflow so
+         the rounded corners clip the scrolling child. */
+      '.dshogq-pop{position:fixed;z-index:1100;box-sizing:border-box;width:max-content;',
+      'min-width:200px;max-width:min(420px,calc(100vw - 32px));max-height:min(420px,calc(100vh - 96px));',
+      'border:0;border-radius:var(--dsw-radius-md);padding:4px;overflow:hidden;display:flex;flex-direction:column;',
+      '--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent);',
+      /* The host's own menu surface is deliberately translucent (58% light /
+         45% dark) because it floats over content. These popovers carry fine
+         print, so they use the opaque overlay token instead. */
+      'background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);',
+      '--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);',
+      '--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);',
+      'font-size:12px;line-height:18px;}',
+      '.dshogq-head{display:flex;align-items:baseline;gap:8px;padding:6px 8px 2px;}',
+      '.dshogq-title{font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary);}',
+      '.dshogq-updated{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-tertiary);}',
+      '.dshogq-foot{margin-top:auto;padding:6px 8px 4px;font-size:11px;color:var(--dsw-alias-label-tertiary);}',
+      '.dshogq-scroll{min-height:0;overflow-y:auto;overflow-x:hidden;padding:0 4px;}',
+      /* Meters: the v1 rhythm, retuned to host type sizes. */
+      '.dshogq-rows{padding:2px 4px;}',
+      '.dshogq-row{padding:6px 4px;display:flex;flex-direction:column;gap:5px;}',
+      '.dshogq-row+.dshogq-row{border-top:.5px solid var(--dsw-alias-border-l1);}',
       '.dshogq-rowhead{display:flex;align-items:baseline;gap:8px;}',
-      '.dshogq-rowlabel{font-size:12px;font-weight:500;}',
-      '.dshogq-rowpct{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums;}',
+      '.dshogq-rowlabel{font-size:12px;color:var(--dsw-alias-label-secondary);}',
+      '.dshogq-rowpct{margin-left:auto;font-size:13px;font-weight:500;font-variant-numeric:tabular-nums;}',
       '.dshogq-rowpct[data-level="normal"]{color:var(--dsw-alias-brand-primary);}',
       '.dshogq-rowpct[data-level="warn"]{color:var(--dsw-alias-state-warn-primary);}',
       '.dshogq-rowpct[data-level="critical"],.dshogq-rowpct[data-level="blocked"]{color:var(--dsw-alias-state-error-primary);}',
-      '.dshogq-rowpct[data-level="idle"]{color:var(--dsw-alias-label-secondary);}',
-      '.dshogq-track{position:relative;height:5px;border-radius:99px;background:var(--dsw-alias-bg-layer-2);',
-      'border:1px solid var(--dsw-alias-border-l1);overflow:hidden;}',
-      '.dshogq-fill{position:absolute;top:0;bottom:0;left:0;border-radius:99px;background:var(--dsw-alias-state-idle-primary);',
-      'transition:width .25s ease;}',
+      '.dshogq-rowpct[data-level="idle"]{color:var(--dsw-alias-label-tertiary);}',
+      '.dshogq-track{position:relative;height:4px;border-radius:var(--dsw-radius-xs);',
+      'background:var(--dsw-alias-border-l1);overflow:hidden;}',
+      '.dshogq-fill{position:absolute;top:0;bottom:0;left:0;border-radius:var(--dsw-radius-xs);',
+      'background:var(--dsw-alias-state-idle-primary);transition:width .2s var(--ds-ease-in-out);}',
       '.dshogq-fill[data-level="normal"]{background:var(--dsw-alias-brand-primary);}',
       '.dshogq-fill[data-level="warn"]{background:var(--dsw-alias-state-warn-primary);}',
       '.dshogq-fill[data-level="critical"],.dshogq-fill[data-level="blocked"]{background:var(--dsw-alias-state-error-primary);}',
-      '.dshogq-sub{display:flex;justify-content:space-between;gap:10px;font-size:11px;color:var(--dsw-alias-label-secondary);}',
-      '.dshogq-msg{padding:6px 0 2px;font-size:11.5px;color:var(--dsw-alias-state-error-primary);word-break:break-word;}',
-      '.dshogq-note{padding:6px 0 2px;font-size:11.5px;color:var(--dsw-alias-label-secondary);}',
-      '.dshogq-foot{margin-top:8px;padding-top:7px;border-top:1px solid var(--dsw-alias-border-l1);font-size:10.5px;',
-      'color:var(--dsw-alias-label-secondary);}',
-      '.dshogq-sect{margin-top:9px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l1);}',
-      '.dshogq-secttitle{display:flex;align-items:baseline;gap:8px;font-size:10.5px;font-weight:600;letter-spacing:.04em;',
-      'text-transform:uppercase;color:var(--dsw-alias-label-secondary);}',
-      '.dshogq-count{margin-left:auto;font-variant-numeric:tabular-nums;text-transform:none;letter-spacing:0;}',
-      '.dshogq-ids{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;}',
-      '.dshogq-id{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10.5px;padding:2px 6px;',
-      'border-radius:6px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);',
-      'color:var(--dsw-alias-label-primary);line-height:1.4;}',
-      '.dshogq-id[data-tone="new"]{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);}',
-      '.dshogq-id[data-tone="gone"]{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary);',
-      'text-decoration:line-through;}',
-      '.dshogq-scroll{max-height:min(46vh,360px);overflow:auto;margin-top:2px;padding-right:2px;}',
-      '.dshogq-kv{display:flex;align-items:baseline;gap:8px;padding:4px 0;font-size:12px;}',
-      '.dshogq-kv+.dshogq-kv{border-top:1px solid var(--dsw-alias-border-l1);}',
-      '.dshogq-kvlabel{color:var(--dsw-alias-label-secondary);min-width:52px;}',
-      '.dshogq-kvvalue{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums;}',
-      '.dshogq-ver{padding:8px 0 6px;}',
-      '.dshogq-ver+.dshogq-ver{border-top:1px solid var(--dsw-alias-border-l1);}',
-      '.dshogq-verhead{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;}',
-      '.dshogq-vertag{font-weight:600;font-size:12px;font-variant-numeric:tabular-nums;}',
-      '.dshogq-verdate{margin-left:auto;font-size:10.5px;color:var(--dsw-alias-label-secondary);}',
-      '.dshogq-chip{font-size:10px;padding:1px 6px;border-radius:99px;border:1px solid var(--dsw-alias-border-l1);',
-      'color:var(--dsw-alias-label-secondary);line-height:1.5;}',
-      '.dshogq-chip[data-tone="ok"]{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary);}',
-      '.dshogq-chip[data-tone="warn"]{border-color:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-primary);}',
-      '.dshogq-log{display:flex;flex-direction:column;gap:2px;margin-top:5px;}',
-      '.dshogq-logheading{font-size:11px;font-weight:600;margin-top:5px;}',
-      '.dshogq-logitem{font-size:11px;color:var(--dsw-alias-label-secondary);padding-left:11px;position:relative;',
+      '.dshogq-sub{display:flex;justify-content:space-between;gap:10px;font-size:11px;color:var(--dsw-alias-label-tertiary);}',
+      /* Model catalog: quiet section titles, no uppercase tracking, code-font chips
+         on the host's interactive hover fill instead of boxed outlines. */
+      '.dshogq-sect{padding:4px 8px 6px;}',
+      '.dshogq-sect+.dshogq-sect{border-top:.5px solid var(--dsw-alias-border-l1);}',
+      '.dshogq-secttitle{display:flex;align-items:baseline;gap:8px;font-size:11px;font-weight:500;',
+      'color:var(--dsw-alias-label-tertiary);}',
+      '.dshogq-count{margin-left:auto;font-weight:400;font-variant-numeric:tabular-nums;}',
+      '.dshogq-secthead{display:flex;align-items:center;gap:6px;width:100%;padding:0;border:none;outline:none;',
+      'background:0 0;cursor:pointer;color:inherit;font:inherit;font-size:11px;font-weight:500;line-height:16px;',
+      'text-align:left;}',
+      '.dshogq-secthead:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));',
+      'border-radius:var(--dsw-radius-xs);}',
+      '.dshogq-sectlabel{color:var(--dsw-alias-label-tertiary);transition:color .12s var(--ds-ease-in-out);}',
+      '.dshogq-secthead:hover .dshogq-sectlabel{color:var(--dsw-alias-label-primary);}',
+      '.dshogq-sectmeta{margin-left:auto;font-weight:400;color:var(--dsw-alias-label-tertiary);',
+      'font-variant-numeric:tabular-nums;}',
+      '.dshogq-caret{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .12s var(--ds-ease-in-out);}',
+      '.dshogq-caret[data-open="true"]{transform:rotate(90deg);}',
+      '.dshogq-diff{display:flex;flex-direction:column;gap:4px;margin-top:5px;}',
+      '.dshogq-diffrow{display:flex;align-items:baseline;gap:8px;}',
+      '.dshogq-difflabel{flex:none;width:26px;font-size:11px;color:var(--dsw-alias-label-tertiary);}',
+      '.dshogq-diffrow>.dshogq-ids{flex:1;min-width:0;margin-top:0;}',
+      '.dshogq-link{color:var(--dsw-alias-brand-primary);text-decoration:none;}',
+      '.dshogq-link:hover{text-decoration:underline;}',
+      '.dshogq-ids{display:flex;flex-wrap:wrap;gap:3px;margin-top:5px;}',
+      '.dshogq-id{font-family:var(--ds-font-family-code);font-size:11px;padding:1px 5px;',
+      'border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-module-platform);',
+      'color:var(--dsw-alias-label-primary);line-height:16px;}',
+      '.dshogq-id[data-tone="new"]{color:var(--dsw-alias-brand-primary);}',
+      '.dshogq-id[data-tone="gone"]{color:var(--dsw-alias-state-error-primary);text-decoration:line-through;}',
+      /* Version: milestones as host rows, chips as host pills. */
+      '.dshogq-kv{display:flex;align-items:baseline;gap:8px;padding:4px 8px;font-size:12px;}',
+      '.dshogq-kv+.dshogq-kv{border-top:.5px solid var(--dsw-alias-border-l1);}',
+      '.dshogq-kvlabel{color:var(--dsw-alias-label-tertiary);min-width:48px;}',
+      '.dshogq-kvvalue{margin-left:auto;font-size:13px;font-weight:500;font-variant-numeric:tabular-nums;}',
+      '.dshogq-kvdate{font-size:11px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;}',
+      '.dshogq-ver{padding:6px 8px;}',
+      '.dshogq-ver+.dshogq-ver{border-top:.5px solid var(--dsw-alias-border-l1);}',
+      '.dshogq-verhead{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}',
+      '.dshogq-vertag{font-size:13px;font-weight:500;font-variant-numeric:tabular-nums;}',
+      '.dshogq-verdate{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-tertiary);}',
+      '.dshogq-chip{font-size:10px;padding:0 5px;border-radius:var(--dsw-radius-sm);line-height:16px;',
+      'background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-tertiary);}',
+      '.dshogq-chip[data-tone="ok"]{color:var(--dsw-alias-state-success-primary);}',
+      '.dshogq-chip[data-tone="warn"]{color:var(--dsw-alias-state-warn-primary);}',
+      '.dshogq-log{display:flex;flex-direction:column;gap:2px;margin-top:4px;}',
+      '.dshogq-logheading{font-size:11px;font-weight:500;color:var(--dsw-alias-label-secondary);margin-top:5px;}',
+      '.dshogq-logitem{font-size:11px;color:var(--dsw-alias-label-secondary);padding-left:10px;position:relative;',
       'word-break:break-word;}',
       '.dshogq-logitem::before{content:"·";position:absolute;left:2px;}',
-      '.dshogq-logtext{font-size:11px;color:var(--dsw-alias-label-secondary);word-break:break-word;}',
+      '.dshogq-logtext{font-size:11px;color:var(--dsw-alias-label-tertiary);word-break:break-word;}',
+      '.dshogq-msg{padding:4px 8px 6px;font-size:12px;color:var(--dsw-alias-state-error-primary);word-break:break-word;}',
+      '.dshogq-note{padding:4px 8px 6px;font-size:12px;color:var(--dsw-alias-label-tertiary);}'
     ].join('');
 
     /** Substitute `{name}` placeholders without depending on the translator's signature. */
@@ -319,6 +364,14 @@ window.__ModuleLoader__.load({
       if (!Number.isFinite(date.getTime())) return '';
       const pad = (value) => (value < 10 ? `0${value}` : String(value));
       return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    }
+
+    /** `MM-DD HH:MM` of an instant — the snapshot may predate the page. */
+    function momentStamp(iso) {
+      const date = new Date(iso);
+      if (!Number.isFinite(date.getTime())) return '';
+      const pad = (value) => (value < 10 ? `0${value}` : String(value));
+      return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
     }
 
     /** Coarse remaining time, matching the popover's one-line budget. */
@@ -506,6 +559,21 @@ window.__ModuleLoader__.load({
           props.subtitle === null || props.subtitle === undefined
             ? null
             : h('span', { className: 'dshogq-updated' }, props.subtitle),
+          typeof props.onRefresh === 'function'
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dshogq-refresh',
+                  'data-busy': props.busy === true ? 'true' : 'false',
+                  'aria-label': props.refreshLabel,
+                  title: props.refreshLabel,
+                  disabled: props.busy === true,
+                  onClick: props.onRefresh,
+                },
+                h(RefreshGlyph, null),
+              )
+            : null,
         ),
         props.children,
         props.footer === null || props.footer === undefined ? null : h('div', { className: 'dshogq-foot' }, props.footer),
@@ -515,9 +583,10 @@ window.__ModuleLoader__.load({
     /**
      * One cell in the sidebar foot: a button plus the popover it opens.
      *
-     * `mode` decides how it opens — 'hover' for the ambient meter reading that
-     * should not need a click, 'click' for the two inspectors whose content is
-     * too tall to appear under a passing pointer.
+     * `mode` decides how the popover opens. 'hover' is what every cell uses: the
+     * pointer arriving opens it, and leaving closes it after a short grace so
+     * the popover can be walked into. 'click' remains for a cell whose content
+     * is too tall to appear under a passing pointer.
      */
     function CellShell(props) {
       const wide = props.wide === true;
@@ -583,17 +652,22 @@ window.__ModuleLoader__.load({
             type: 'button',
             className: 'dshogq-cell',
             'data-open': open ? 'true' : 'false',
+            /* Icon-only cells need the host's tighter padding; a labelled cell
+               reads better with the wider side bearing its text uses. */
+            'data-icon': props.label === null || props.label === undefined ? 'true' : 'false',
             'aria-expanded': open,
             'aria-label': props.title,
             title: open ? undefined : props.hint,
             onFocus: hover ? openNow : undefined,
             onBlur: hover ? closeSoon : undefined,
-            onClick: () => (open ? closeNow() : openNow()),
+            /* Hover owns the popover for every cell, so a click only re-asserts
+               the open state instead of fighting the pointer. */
+            onClick: hover ? openNow : () => (open ? closeNow() : openNow()),
           },
           props.glyph,
           props.label === null || props.label === undefined
             ? null
-            : h('span', { className: 'dshogq-celltext' }, props.label),
+            : h('span', { className: 'dshogq-celltext', 'data-level': props.labelLevel || 'idle' }, props.label),
           props.badge === true ? h('span', { className: 'dshogq-badge', 'aria-hidden': true }) : null,
         ),
         open && typeof props.renderPopover === 'function' ? props.renderPopover(position) : null,
@@ -677,6 +751,22 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** The manual-refresh affordance in a popover's title row. */
+    function RefreshGlyph() {
+      return h(
+        'svg',
+        { className: 'dshogq-marksvg', width: 12, height: 12, viewBox: '0 0 16 16', 'aria-hidden': true },
+        h('path', {
+          d: 'M13.5 8a5.5 5.5 0 1 1-1.61-3.89A.75.75 0 0 1 12.9 5.3 4 4 0 1 0 12 8a.75.75 0 0 1 1.5 0Z',
+          fill: 'currentColor',
+        }),
+        h('path', {
+          d: 'M13.5 1.75a.75.75 0 0 1 .75.75V5.5a.75.75 0 0 1-1.5 0V3.06l-2.47 2.47a.75.75 0 1 1-1.06-1.06l2.47-2.47H12.75a.75.75 0 0 1 0-1.5Z',
+          fill: 'currentColor',
+        }),
+      );
+    }
+
     /** Poll the meter route while the page is visible, plus a countdown heartbeat. */
     function useQuota() {
       const [state, setState] = React.useState({ phase: 'loading', payload: null, message: '' });
@@ -728,10 +818,18 @@ window.__ModuleLoader__.load({
       return state;
     }
 
+    /** The local 08:00 that follows an instant — the one auto-refresh a day. */
+    function nextEightAm(from) {
+      const next = new Date(from);
+      next.setHours(8, 0, 0, 0);
+      if (next.getTime() <= from) next.setDate(next.getDate() + 1);
+      return next.getTime();
+    }
+
     /**
-     * Read a slow-moving Host route once per `ttlMs` and share it between every
-     * component that asks for the same path — a page load costs one read, and
-     * reopening a popover inside the window costs none.
+     * Read a slow-moving Host route once and share it between every component
+     * that asks for the same path — a page load costs one read, and every later
+     * read is either the refresh button in the popover or the daily 08:00 tick.
      */
     const RESOURCE_CACHE = new Map();
 
@@ -744,6 +842,23 @@ window.__ModuleLoader__.load({
       };
       const [entry, setEntry] = React.useState(read);
       const [nonce, setNonce] = React.useState(0);
+
+      /* Exactly one automatic re-read a day, at 08:00 local time. A miss is
+         cheap to repeat and self-corrects: the new answer moves the next
+         boundary to tomorrow, so a suspended tab that wakes late still refreshes
+         once rather than every minute until then. The page load itself owns the
+         first read, so a missing entry is left alone here. */
+      React.useEffect(() => {
+        const check = () => {
+          const hit = RESOURCE_CACHE.get(path);
+          if (hit === undefined) return;
+          if (Date.now() < nextEightAm(hit.at)) return;
+          RESOURCE_CACHE.delete(path);
+          setNonce((value) => value + 1);
+        };
+        const timer = window.setInterval(check, 60000);
+        return () => window.clearInterval(timer);
+      }, [path]);
 
       React.useEffect(() => {
         const hit = RESOURCE_CACHE.get(path);
@@ -782,7 +897,12 @@ window.__ModuleLoader__.load({
         setNonce((value) => value + 1);
       }, [path]);
 
-      return { state: entry.state, at: entry.at, refresh: refresh };
+      return {
+        state: entry.state,
+        at: entry.at,
+        busy: entry.state.phase === 'loading',
+        refresh: refresh,
+      };
     }
 
     /**
@@ -800,13 +920,16 @@ window.__ModuleLoader__.load({
         const ids = payload.models.map((model) => model.id);
         const previous = readSnapshot();
         if (previous === null) {
-          setDiff({ first: true, at: null, added: [], removed: [] });
+          setDiff({ first: true, at: null, previousIds: null, added: [], removed: [] });
         } else {
           const before = new Set(previous.ids);
           const now = new Set(ids);
           setDiff({
             first: false,
             at: previous.at,
+            /* The list this page's read replaced, so the popover can show what
+               was recorded rather than only what changed. */
+            previousIds: previous.ids,
             added: ids.filter((id) => !before.has(id)),
             removed: previous.ids.filter((id) => !now.has(id)),
           });
@@ -825,13 +948,43 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** The model catalog popover: both baselines, then the whole list. */
+    /** One collapsible inventory: a header carrying a count and a stamp. */
+    function ModelSection(props) {
+      const [open, setOpen] = React.useState(false);
+      const rows = Array.isArray(props.rows) ? props.rows : null;
+      return h(
+        'div',
+        { className: 'dshogq-sect' },
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'dshogq-secthead',
+            'aria-expanded': open,
+            onClick: () => setOpen((value) => !value),
+          },
+          h('span', { className: 'dshogq-caret', 'data-open': open ? 'true' : 'false', 'aria-hidden': true }, '▸'),
+          h('span', { className: 'dshogq-sectlabel' }, props.label),
+          h('span', { className: 'dshogq-sectmeta' }, props.meta),
+        ),
+        !open
+          ? null
+          : rows === null || rows.length === 0
+            ? h('div', { className: 'dshogq-note' }, props.empty)
+            : h('div', { className: 'dshogq-scroll' }, idRow(rows, props.tone)),
+      );
+    }
+
+    /**
+     * The model catalog: two collapsible inventories — this read, and the
+     * snapshot it replaced — the difference between them, and a link to the
+     * documentation rather than a recital of it.
+     */
     function ModelsPopover(props) {
       const t = props.t;
       const state = props.state;
       const diff = props.diff;
       const payload = state.phase === 'ready' ? state.payload : null;
-      const baseline = payload !== null && payload.docsBaseline !== null && typeof payload.docsBaseline === 'object' ? payload.docsBaseline : null;
       const models = payload !== null && Array.isArray(payload.models) ? payload.models : [];
 
       let body;
@@ -840,83 +993,58 @@ window.__ModuleLoader__.load({
       } else if (state.phase === 'error' || payload === null) {
         body = h('div', { className: 'dshogq-msg' }, failureLine(state, t));
       } else {
-        const sections = [];
-        sections.push(
-          h(
-            'div',
-            { className: 'dshogq-sect', key: 'docs' },
-            h(
-              'div',
-              { className: 'dshogq-secttitle' },
-              h('span', null, t('docsSection')),
-              h(
-                'span',
-                { className: 'dshogq-count' },
-                fill(t('docsBaseline'), {
-                  date: baseline === null ? '?' : baseline.date,
-                  n: baseline === null ? 0 : baseline.count,
-                }),
-              ),
-            ),
-            baseline !== null && baseline.notInDocs.length > 0
-              ? idRow(baseline.notInDocs, 'new')
-              : h('div', { className: 'dshogq-note' }, t('docsNone')),
-            baseline !== null && baseline.missingFromApi.length > 0
-              ? h(
-                  'div',
-                  { className: 'dshogq-note' },
-                  fill(t('docsMissing'), { ids: baseline.missingFromApi.join(', ') }),
-                )
-              : null,
-          ),
-        );
-
+        const previousIds = diff !== null && Array.isArray(diff.previousIds) ? diff.previousIds : null;
         const added = diff !== null && diff.first === false ? diff.added : [];
         const removed = diff !== null && diff.first === false ? diff.removed : [];
-        sections.push(
-          h(
-            'div',
-            { className: 'dshogq-sect', key: 'since' },
-            h(
-              'div',
-              { className: 'dshogq-secttitle' },
-              h('span', null, t('sinceSection')),
-              diff !== null && diff.at !== null
-                ? h('span', { className: 'dshogq-count' }, fill(t('sinceAt'), { time: dayStamp(diff.at) }))
-                : null,
-            ),
-            diff === null
-              ? h('div', { className: 'dshogq-note' }, t('loading'))
-              : diff.first
-                ? h('div', { className: 'dshogq-note' }, fill(t('sinceFirst'), { n: models.length }))
-                : added.length === 0 && removed.length === 0
-                  ? h('div', { className: 'dshogq-note' }, t('sinceNone'))
-                  : h('div', null, added.length > 0 ? idRow(added, 'new') : null, removed.length > 0 ? idRow(removed, 'gone') : null),
-          ),
-        );
 
-        sections.push(
+        const diffBody =
+          diff === null
+            ? h('div', { className: 'dshogq-note' }, t('loading'))
+            : diff.first
+              ? h('div', { className: 'dshogq-note' }, fill(t('snapFirstNote'), { n: models.length }))
+              : h(
+                  'div',
+                  { className: 'dshogq-diff' },
+                  h(
+                    'div',
+                    { className: 'dshogq-diffrow' },
+                    h('span', { className: 'dshogq-difflabel' }, t('removed')),
+                    removed.length === 0
+                      ? h('span', { className: 'dshogq-note' }, t('none'))
+                      : idRow(removed, 'gone'),
+                  ),
+                  h(
+                    'div',
+                    { className: 'dshogq-diffrow' },
+                    h('span', { className: 'dshogq-difflabel' }, t('added')),
+                    added.length === 0 ? h('span', { className: 'dshogq-note' }, t('none')) : idRow(added, 'new'),
+                  ),
+                );
+
+        body = h(
+          'div',
+          null,
+          h(ModelSection, {
+            label: t('liveSection'),
+            meta: `${models.length} · ${clockTime(payload.fetchedAt)}`,
+            rows: models.map((model) => model.id),
+            empty: t('liveEmpty'),
+            tone: null,
+          }),
+          h(ModelSection, {
+            label: t('snapSection'),
+            meta: previousIds === null ? t('snapFirst') : `${previousIds.length} · ${momentStamp(diff.at)}`,
+            rows: previousIds,
+            empty: t('snapEmpty'),
+            tone: null,
+          }),
           h(
             'div',
-            { className: 'dshogq-sect', key: 'all' },
-            h(
-              'div',
-              { className: 'dshogq-secttitle' },
-              h('span', null, t('allSection')),
-              h('span', { className: 'dshogq-count' }, fill(t('modelsCount'), { n: models.length })),
-            ),
-            h(
-              'div',
-              { className: 'dshogq-scroll' },
-              h(
-                'div',
-                { className: 'dshogq-ids' },
-                models.map((model) => h('span', { className: 'dshogq-id', key: model.id }, model.id)),
-              ),
-            ),
+            { className: 'dshogq-sect' },
+            h('div', { className: 'dshogq-secttitle' }, t('diffSection')),
+            diffBody,
           ),
         );
-        body = h('div', null, sections);
       }
 
       return h(
@@ -925,8 +1053,15 @@ window.__ModuleLoader__.load({
           position: props.position,
           width: MODELS_WIDTH,
           title: t('modelsTitle'),
-          subtitle: payload === null ? null : clockTime(payload.fetchedAt),
-          footer: t('modelsFooter'),
+          subtitle: payload === null ? null : fill(t('checkedAt'), { time: clockTime(payload.fetchedAt) }),
+          onRefresh: props.onRefresh,
+          busy: props.busy === true,
+          refreshLabel: t('refresh'),
+          footer: h(
+            'a',
+            { className: 'dshogq-link', href: DOCS_URL, target: '_blank', rel: 'noreferrer' },
+            `${t('docsLink')} ↗`,
+          ),
         },
         body,
       );
@@ -939,13 +1074,19 @@ window.__ModuleLoader__.load({
       const payload = state.phase === 'ready' ? state.payload : null;
       const locale = props.locale;
 
-      const milestone = (label, version, tone) =>
+      /* One milestone row: label, version, its publish date, then any chip. */
+      const milestone = (label, version, date, tone) =>
         h(
           'div',
           { className: 'dshogq-kv', key: label },
           h('span', { className: 'dshogq-kvlabel' }, label),
           h('span', { className: 'dshogq-kvvalue' }, version === null || version === undefined ? '—' : version),
-          tone === null || tone === undefined ? null : h('span', { className: 'dshogq-chip', 'data-tone': tone.tone }, tone.text),
+          date === null || date === undefined
+            ? null
+            : h('span', { className: 'dshogq-kvdate' }, dayStamp(date)),
+          tone === null || tone === undefined
+            ? null
+            : h('span', { className: 'dshogq-chip', 'data-tone': tone.tone }, tone.text),
         );
 
       let body;
@@ -955,11 +1096,13 @@ window.__ModuleLoader__.load({
         body = h('div', { className: 'dshogq-msg' }, failureLine(state, t));
       } else {
         const channels = payload.channels !== null && typeof payload.channels === 'object' ? payload.channels : {};
+        const dates = payload.channelDates !== null && typeof payload.channelDates === 'object' ? payload.channelDates : {};
         const rows = [
-          milestone(t('verCurrent'), payload.current === null ? t('verUnknown') : payload.current, null),
+          milestone(t('verCurrent'), payload.current === null ? t('verUnknown') : payload.current, null, null),
           milestone(
             t('verLatest'),
             payload.latest,
+            dates.latest ?? null,
             payload.latest === null || payload.current === null
               ? null
               : payload.updateAvailable
@@ -968,10 +1111,10 @@ window.__ModuleLoader__.load({
           ),
         ];
         if (typeof channels.alpha === 'string' && channels.alpha !== payload.latest) {
-          rows.push(milestone('alpha', channels.alpha, { tone: null, text: null }));
+          rows.push(milestone('alpha', channels.alpha, dates.alpha ?? null, null));
         }
         if (typeof channels.next === 'string' && channels.next !== payload.latest && channels.next !== channels.alpha) {
-          rows.push(milestone('next', channels.next, null));
+          rows.push(milestone('next', channels.next, dates.next ?? null, null));
         }
 
         const notes = [];
@@ -1051,6 +1194,9 @@ window.__ModuleLoader__.load({
           width: VERSION_WIDTH,
           title: t('versionTitle'),
           subtitle: payload === null ? null : fill(t('checkedAt'), { time: clockTime(payload.fetchedAt) }),
+          onRefresh: props.onRefresh,
+          busy: props.busy === true,
+          refreshLabel: t('refresh'),
           footer: t('versionFooter'),
         },
         body,
@@ -1072,8 +1218,15 @@ window.__ModuleLoader__.load({
         const byId = windowsById(state);
         const known = WINDOW_KEYS.filter((key) => byId[key.id] !== undefined);
         const ready = state.phase === 'ready' && known.length > 0;
-        let highest = 0;
-        for (const key of known) highest = Math.max(highest, percentOf(byId[key.id]));
+        /* The cell shows the window that is closest to its own limit, and wears
+           that window's colour, so a tight meter reads before the popover opens. */
+        let highest = { percent: 0, level: 'idle' };
+        for (const key of known) {
+          const window = byId[key.id];
+          if (percentOf(window) > highest.percent) {
+            highest = { percent: percentOf(window), level: levelOf(window) };
+          }
+        }
 
         const hint = ready
           ? fill(t('hint'), {
@@ -1092,7 +1245,8 @@ window.__ModuleLoader__.load({
             title: t('title'),
             hint: hint,
             glyph: miniBars(byId),
-            label: wide && ready ? `${Math.round(highest)}%` : null,
+            label: wide && ready ? `${Math.round(highest.percent)}%` : null,
+            labelLevel: highest.level,
             renderPopover: (position) => {
               let body;
               if (state.phase === 'loading') {
@@ -1135,24 +1289,31 @@ window.__ModuleLoader__.load({
         const remote = useRemote(MODELS_ROUTE, INFO_TTL_MS);
         const payload = remote.state.phase === 'ready' ? remote.state.payload : null;
         const diff = useModelDiff(payload);
-        const baseline = payload !== null && payload.docsBaseline !== null && typeof payload.docsBaseline === 'object' ? payload.docsBaseline : null;
-        const fresh = (baseline !== null && baseline.notInDocs.length > 0) || (diff !== null && diff.first === false && (diff.added.length > 0 || diff.removed.length > 0));
+        /* The dot means "the last refresh changed the catalog", not "the docs
+           are behind" — that condition never clears, and a dot that is always
+           on has stopped saying anything. */
+        const updated = diff !== null && diff.first === false && (diff.added.length > 0 || diff.removed.length > 0);
 
         return h(
           CellShell,
           {
             wide: wide,
-            mode: 'click',
+            mode: 'hover',
             width: MODELS_WIDTH,
             title: t('modelsTitle'),
             hint: t('modelsHint'),
             glyph: h(OpenCodeMark, { height: 16 }),
             label: wide && payload !== null ? String(payload.total) : null,
-            badge: fresh,
-            onOpen: () => {
-              if (Date.now() - remote.at > REOPEN_REFRESH_MS) remote.refresh();
-            },
-            renderPopover: (position) => h(ModelsPopover, { position: position, t: t, state: remote.state, diff: diff }),
+            badge: updated,
+            renderPopover: (position) =>
+              h(ModelsPopover, {
+                position: position,
+                t: t,
+                state: remote.state,
+                diff: diff,
+                busy: remote.busy,
+                onRefresh: remote.refresh,
+              }),
           },
         );
       };
@@ -1173,18 +1334,22 @@ window.__ModuleLoader__.load({
           CellShell,
           {
             wide: wide,
-            mode: 'click',
+            mode: 'hover',
             width: VERSION_WIDTH,
             title: t('versionTitle'),
             hint: t('versionHint'),
             glyph: h(VersionGlyph, null),
             label: 'Ver',
             badge: payload !== null && payload.updateAvailable === true,
-            onOpen: () => {
-              if (Date.now() - remote.at > REOPEN_REFRESH_MS) remote.refresh();
-            },
             renderPopover: (position) =>
-              h(VersionPopover, { position: position, t: t, state: remote.state, locale: locale }),
+              h(VersionPopover, {
+                position: position,
+                t: t,
+                state: remote.state,
+                locale: locale,
+                busy: remote.busy,
+                onRefresh: remote.refresh,
+              }),
           },
         );
       };
@@ -1202,6 +1367,27 @@ window.__ModuleLoader__.load({
           }
         };
         const readCopy = () => COPY[readLocale()];
+
+        /* Styles go into the document head the way every shipped Client half does
+           them: one guarded <style> tag, added once and removed when this plugin
+           unloads. Rendering the tag as a React child of a cell never reaches the
+           document, so without this the whole control renders unstyled. */
+        const tagId = `${NS}/client.css`;
+        if (
+          typeof document !== 'undefined' &&
+          document.querySelector(`style[data-plugin-css=${JSON.stringify(tagId)}]`) === null
+        ) {
+          ctx.effect(() => {
+            const tag = document.createElement('style');
+            tag.dataset.plugin = NS;
+            tag.dataset.pluginCss = tagId;
+            tag.textContent = CSS;
+            document.head.appendChild(tag);
+            return () => {
+              if (tag.parentNode !== null) tag.parentNode.removeChild(tag);
+            };
+          }, 'opencode-go-quota: styles');
+        }
 
         for (const locale of Object.keys(COPY)) {
           ctx.effect(() => ctx.locale.register(NS, locale, COPY[locale]), `opencode-go-quota: locale ${locale}`);

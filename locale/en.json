@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "OpenCode Go quota",
-    "description": "Shows the Go plan's 5-hour, weekly and monthly usage in the sidebar foot, with reset countdowns."
+    "title": "OpenCode Go sidebar",
+    "description": "Three cells in the sidebar foot: Go plan meters, the model catalog with a snapshot diff, and a DSH version check with release notes."
   }
 }
