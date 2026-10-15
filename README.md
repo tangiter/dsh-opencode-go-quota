@@ -13,22 +13,27 @@
 
 ## 安装
 
-### 1. 把这个目录放到一个长期不变的位置
+两条路，按机器情况选一条。
 
-安装用的是 pnpm 的 `link:`（目录软链），**装好之后不能移动或删除这个目录**，否则插件会失效。
-建议放在工作区里，例如：
+### 方式 A：从 git 安装（推荐，前提是 `git` 在 PATH 上）
 
-| 平台 | 建议位置 |
-| --- | --- |
-| Windows | `<你的工作区>\opencode-go-quota` |
-| macOS / Linux | `~/dsh-workspace/opencode-go-quota` |
+```
+plugin_manager
+  action: install_bundle
+  target: git+https://github.com/tangiter/dsh-opencode-go-quota.git
+```
 
-### 2. 在本机 DSH 的「创造模式」会话里说一句
+**前提**：运行 DSH 的那个进程必须能在 PATH 上找到 `git`，否则 pnpm 会直接报
+`ERR_PNPM_GIT_RESOLVE_FAILED: git executable not found on PATH`（跟网络无关，纯粹是找不到 git）。
+macOS 装了 Xcode Command Line Tools、Windows 装了 Git for Windows、Linux 装了 `git` 包，一般就满足。
+想确认，在 DSH 的终端里跑 `git --version`。
 
-> 我有个 DSH 插件包在 `<这个目录的绝对路径>`，请用 plugin_manager 的 `install_bundle`
-> 把它装到当前 profile。
+这条路装出来的是**包副本**（存在 pnpm store 里，`node_modules` 下是指向 store 的 junction），
+所以仓库目录放哪儿都行、删掉也不影响运行。升级用 `pnpm update`。
 
-或者直接由 agent 调用：
+### 方式 B：从本地目录安装（不需要 git）
+
+把仓库克隆或解压到一个**长期不变的位置**，然后用那个绝对路径安装：
 
 ```
 plugin_manager
@@ -36,9 +41,19 @@ plugin_manager
   target: <这个目录的绝对路径>
 ```
 
-安装结果要看 `application` 字段：`applied` 才算生效。**不需要重启**，装完即可在侧边栏看到。
+这条路用的是 pnpm 的 `link:`（目录软链），**装好之后不能移动或删除该目录**，否则插件失效。
+建议放在工作区里：
 
-### 3. 配置 API Key（必做）
+| 平台 | 建议位置 |
+| --- | --- |
+| Windows | `<你的工作区>\opencode-go-quota` |
+| macOS / Linux | `~/dsh-workspace/opencode-go-quota` |
+
+### 安装完成后
+
+看 `application` 字段：`applied` 才算生效。**不需要重启**，装完即可在侧边栏看到。
+
+### 配置 API Key（必做）
 
 插件只认一个凭据引用：**`OPENCODE_GO_API_KEY`**。三种配法任选其一：
 
@@ -56,16 +71,16 @@ plugin_manager
 如果另一台机器用的是**另一个账号**，那就把 `cordis.patch.yml` 里的 `apiKeyEnv` 改成
 另一个变量名（例如 `OPENCODE_GO_API_KEY_WORK`），再按上面的方式配上对应的 Key。
 
-### 4. 验证
+### 验证
 
 - 侧边栏底部 Settings 旁边出现三根小竖条；
 - 悬停弹出明细，三行数字应与 [console](https://opencode.ai/console) 里看到的一致；
 - 若弹层显示红色报错文字，对照文案排查：
-  - 「没有为 OPENCODE_GO_API_KEY 配置凭据」→ 第 3 步没做或变量名不符；
+  - 「没有为 OPENCODE_GO_API_KEY 配置凭据」→ 上面配置 Key 那步没做或变量名不符；
   - 「Go API Key 被拒绝」→ Key 失效或写错；
   - 「无法连接用量接口」→ 网络到不了 `opencode.ai`。
 
-### 5. 如果装是装上了，但侧边栏什么都没有
+### 如果装是装上了，但侧边栏什么都没有
 
 说明那台机器的 DSH 里**没有 `sidebar.footer.action` 这个槽位**。槽位不存在时
 `ctx.slots.inject` 的回调永远不会触发，插件会静默地什么都不注册（不报错、不崩溃）。
