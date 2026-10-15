@@ -1,0 +1,9 @@
+# Installed bundles are node_modules trees; never commit them.
+node_modules/
+dist/
+*.log
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

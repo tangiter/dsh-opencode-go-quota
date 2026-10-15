@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "OpenCode Go quota",
+    "description": "Shows the Go plan's 5-hour, weekly and monthly usage in the sidebar foot, with reset countdowns."
+  }
+}

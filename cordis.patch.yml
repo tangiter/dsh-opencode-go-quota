@@ -1,0 +1,16 @@
+# OpenCode Go quota: one sidebar-foot cell plus a hover popover.
+#
+# The Host half owns the credential and the upstream call; the Client half only
+# reads the computed percentages from a same-origin route, so the API key never
+# reaches the browser.
+- insert:
+    - id: opencode-go-quota
+      name: '@local/opencode-go-quota'
+      config:
+        # Base URL of the OpenCode Go inference API; `/usage` is appended.
+        baseUrl: https://opencode.ai/zen/go/v1
+        # Environment-variable name resolved through ctx.credentials.
+        apiKeyEnv: OPENCODE_GO_API_KEY
+        # Upstream answers are cached this long; the page polls at its own pace.
+        refreshMs: 60000
+        timeoutMs: 15000

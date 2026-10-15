@@ -1,0 +1,3 @@
+# The bundle is served to the browser byte-for-byte; never let a checkout
+# rewrite line endings or encodings.
+* -text

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "OpenCode Go 用量",
+    "description": "在侧边栏底部显示 Go 套餐的时段、本周、本月用量占比与重置倒计时。"
+  }
+}
