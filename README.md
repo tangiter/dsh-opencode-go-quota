@@ -1,13 +1,26 @@
-# OpenCode Go 用量 · `@local/opencode-go-quota`
+# OpenCode Go 侧边栏 · `@local/opencode-go-quota`
 
-在 DSH Web 界面**侧边栏底部**（Settings 旁边）显示 OpenCode Go 套餐的三个计量窗口：
+在 DSH Web 界面**侧边栏底部**（Settings 旁边）并排三个单元格，从左到右：
 
-- **时段（5 小时）** / **本周** / **本月** — 各自的占用百分比、剩余比例、重置倒计时
-- 收起成 56px 窄栏时显示三根迷你竖条，悬停弹出明细
-- 低于 70% 用品牌色，70–89% 警告色，≥90% 或上游报异常状态用错误色
+| 单元格 | 平时显示 | 打开后 |
+| --- | --- | --- |
+| **用量** | 三根迷你竖条（时段 / 本周 / 本月），宽栏时再加最紧一项的百分比 | 悬停弹出：每个窗口的占用条、剩余比例、重置倒计时 |
+| **OpenCode 标志** | OpenCode 方框标记，宽栏时加模型总数 | 点击弹出：官方文档未列出的模型、自上次查看新增/下架的模型、全部模型 |
+| **Ver** | 标签图标 + `Ver`，有新版本时带一个圆点 | 点击弹出：当前 DSH 版本 / npm `latest` / `alpha`，以及每个更新版本的双语更新说明 |
 
-数据来自 `GET <baseUrl>/usage`（默认 `https://opencode.ai/zen/go/v1`），由 Host 半边用
-`ctx.credentials` 解析出的 API Key 直接调用；**Key 不会出现在任何发往浏览器的响应里**。
+颜色：低于 70% 用品牌色，70–89% 警告色，≥90% 或上游报异常状态用错误色。
+
+三个单元格的数据都来自 Host 半边的同源路由，**API Key 不会出现在任何发往浏览器的响应里**：
+
+| 路由 | 上游 | 缓存 |
+| --- | --- | --- |
+| `/opencode-go-quota/usage` | `GET <baseUrl>/usage` | `refreshMs`（默认 60 秒） |
+| `/opencode-go-quota/models` | `GET <baseUrl>/models` | `infoRefreshMs`（默认 15 分钟） |
+| `/opencode-go-quota/version` | npm registry + GitHub Release | `infoRefreshMs` |
+
+模型目录里**没有可用的"新旧"信号**（37 个条目的 `created` 时间戳完全相同），所以"更新了哪些模型"
+由两条显式基准回答：内置的官方文档清单（下方 `DOCS_BASELINE_MODELS`，带日期），以及浏览器里
+保存的上次快照。后者存在 `localStorage` 的 `opencode-go-quota:models:v1`。
 
 ---
 
@@ -96,27 +109,33 @@ cordis_inspect_query
 ```
 
 `available: false` 就表示槽位不存在 —— 把那台机器的 DSH 升级到与本机相同或更新的版本。
-`available: true` 但 occupants 里没有 `opencode-go-quota`，则多半是浏览器缓存了旧的
-bundle，刷新一次页面即可。
+`available: true` 但 occupants 里没有 `opencode-go-quota` / `opencode-go-models` /
+`opencode-go-version` 这三个 id，则多半是浏览器缓存了旧的 bundle，刷新一次页面即可。
 
 ---
 
 ## 可调参数
 
-改 `cordis.patch.yml` 里那一行的 `config`（改完刷新页面即可，Host 侧会热重载配置）：
+改 `cordis.patch.yml` 里那一行的 `config`（改配置会被热重载，不用重启）：
 
 ```yaml
 - insert:
     - id: opencode-go-quota
       name: '@local/opencode-go-quota'
       config:
-        baseUrl: https://opencode.ai/zen/go/v1   # 换端点；`/usage` 会自动追加
-        apiKeyEnv: OPENCODE_GO_API_KEY           # 换凭据引用名
-        refreshMs: 60000                         # Host 缓存时长，之后才会重新打上游
-        timeoutMs: 15000                         # 单次上游请求超时
+        baseUrl: https://opencode.ai/zen/go/v1        # 换端点；`/usage`、`/models` 会自动追加
+        apiKeyEnv: OPENCODE_GO_API_KEY                # 换凭据引用名
+        refreshMs: 60000                              # 用量答案的缓存时长
+        infoRefreshMs: 900000                         # 模型目录与版本答案的缓存时长
+        timeoutMs: 15000                              # 单次上游请求超时
+        registryUrl: https://registry.npmjs.org       # npm 版本来源
+        releasesRepo: deepseek-ai/deepseek-harness    # 更新说明来源
 ```
 
-页面侧固定每 60 秒轮询一次，且**页面不可见时不轮询**；所以没有页面开着时完全不产生流量。
+`infoRefreshMs` 不宜调小：GitHub 的 Release 接口对未认证请求限制 **60 次/小时**，
+默认 15 分钟缓存意味着页面开着一天也只消耗 4 次左右。
+
+用量那一格固定每 60 秒轮询一次，且**页面不可见时不轮询**——没有页面开着时完全不产生流量。
 想改轮询节奏，编辑 `client.js` 顶部的 `POLL_MS`。
 
 ---
@@ -137,14 +156,49 @@ plugin_manager
 
 | 文件 | 作用 |
 | --- | --- |
-| `index.js` | Host 半边：解析 Key → 调 `/usage` → 归一化 → 经同源路由 `/opencode-go-quota/usage` 提供给页面 |
-| `client.js` | Client 半边：在 `sidebar.footer.action` 注册单元格与弹层；纯视图 `QuotaView` 与轮询容器 `makeCell` 分离 |
+| `index.js` | Host 半边：解析 Key、调上游、归一化，经三条同源路由提供给页面 |
+| `client.js` | Client 半边：在 `sidebar.footer.action` 注册三个单元格；纯视图与容器分离，弹层外壳 `PopoverBox` / `CellShell` 共用 |
 | `cordis.patch.yml` | 插入插件行并声明可调参数 |
 | `icon.svg` / `locale/*.json` | 插件管理页的图标与标题、描述 |
 
-- 路由带 Host 的信任围栏（未认证请求 401），与系统自带的 `/open-in-app/*` 同一套机制；
-- 上游返回两种形状都兼容：`{ usage: { rolling, weekly, monthly } }` 与 `{ windows: [...] }`；
-- 上游改版导致无法识别时**显示报错而不是伪造 0%**，避免误判额度。
+- 三条路由都带 Host 的信任围栏（未认证请求 401），与系统自带的 `/open-in-app/*` 同一套机制；
+- 上游返回形状都做了兼容：用量认 `{ usage: {...} }` 与 `{ windows: [...] }`，
+  模型认 `{ data: [...] }` 与 `{ models: [...] }`，Release 正文按 `<h3 id="cn-…">` / `id="en-…"`
+  锚点切成双语；
+- 任何一方无法识别或读不到时**显示具体错误而不是伪造数值**，避免把"读失败"误读成"用量为 0"。
 
-**注意**：`/usage` 这个端点官方文档没有记载，属于未文档化接口，上游可能随时变更路径或返回结构。
-真被改了，弹层会给出提示，改 `index.js` 里的 `extractWindows` 即可适配。
+**注意**：`/usage` 与 `/models` 这两个端点官方文档没有记载，属于未文档化接口，上游可能随时
+变更路径或返回结构。真被改了，弹层会给出提示，改 `index.js` 里的 `extractWindows` / `readModels`
+即可适配。`DOCS_BASELINE_MODELS` 是抓取当天的文档清单，会随时间过时——那是它的设计意图，
+它只用来回答"接口里有哪些是文档还没写的"。
+
+---
+
+## 改 Host 半边（`index.js`）
+
+DSH 的 HMR **默认只监听配置文件，不监听插件源码**（base bundle 给的是 `root: []`）。
+后果是：`client.js` 的改动会被浏览器侧自己的加载机制捡起（刷新页面即生效），
+而 `index.js` 的改动会一直等到 DSH 重启。
+
+要让它也热重载，在 profile 的 `cordis.patch.yml` 里给 `hmr` 这一行加上本插件的源码目录：
+
+```yaml
+- id: hmr
+  config:
+    root:
+      - '<本插件的绝对路径>'
+```
+
+实测在运行中写入**也能生效**（profile patch 变化会触发重新组合）。之后任何一次真实写入
+（编辑保存、或 `[IO.File]::WriteAllBytes` 原样回写）都会在 chokidar 的 2 秒写稳定窗口后
+替换模块缓存并重载该条目。
+
+验证办法：探测三条路由，已注册的返回 **401**，未注册的返回 **404**——拿一个随便编的路径做对照：
+
+```
+GET /opencode-go-quota/version   -> 401   已注册（未认证）
+GET /zzz-nope                    -> 404   未注册
+```
+
+注意 `root` 覆盖会**替换整个 `config`**，`base` / `ignored` / `debounce` 留默认值即可。
+另外：替换**已安装包的版本**仍然需要重启，HMR 只管源码文件。

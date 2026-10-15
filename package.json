@@ -1,9 +1,9 @@
 {
   "name": "@local/opencode-go-quota",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
-  "description": "OpenCode Go plan usage (5-hour / weekly / monthly) in the sidebar foot.",
+  "description": "OpenCode Go plan meters, model catalog diffs, and DSH version checks in the sidebar foot.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -15,6 +15,7 @@
     "client.js",
     "cordis.patch.yml",
     "icon.svg",
+    "README.md",
     "locale/*.json"
   ],
   "icon": "./icon.svg",
