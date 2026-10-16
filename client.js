@@ -100,9 +100,6 @@ window.__ModuleLoader__.load({
       modelsHint: 'Every model the Go plan currently offers',
       refresh: 'Refresh',
       liveSection: 'Every model (live)',
-      snapSection: 'Last snapshot',
-      snapFirst: 'first read',
-      snapEmpty: 'nothing recorded yet',
       snapFirstNote: 'First read — this list is now the snapshot ({n} models). Press refresh to compare.',
       diffSection: 'Difference',
       added: 'Added',
@@ -159,9 +156,6 @@ window.__ModuleLoader__.load({
         modelsHint: 'Go 套餐当前提供的全部模型',
         refresh: '刷新',
         liveSection: '全部模型（实时）',
-        snapSection: '上次获取（快照）',
-        snapFirst: '首次',
-        snapEmpty: '尚无快照',
         snapFirstNote: '首次获取，已把本次清单记为快照（{n} 个）。之后点刷新即可对比。',
         diffSection: '差异对比',
         added: '新增',
@@ -229,7 +223,11 @@ window.__ModuleLoader__.load({
       'background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);',
       '--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);',
       '--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);',
-      'font-size:12px;line-height:18px;}',
+      'font-size:12px;line-height:18px;',
+      /* The sidebar chrome disables selection; the popover's fine print is the
+         one place a reader copies text out of, so selection is switched back on
+         here. Without it a drag selects the conversation behind the panel. */
+      '-webkit-user-select:text;user-select:text;}',
       '.dshogq-head{display:flex;align-items:baseline;gap:8px;padding:6px 8px 2px;}',
       '.dshogq-title{font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary);}',
       '.dshogq-updated{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-tertiary);}',
@@ -378,14 +376,6 @@ window.__ModuleLoader__.load({
       if (!Number.isFinite(date.getTime())) return '';
       const pad = (value) => (value < 10 ? `0${value}` : String(value));
       return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-    }
-
-    /** `MM-DD HH:MM` of an instant — the snapshot may predate the page. */
-    function momentStamp(iso) {
-      const date = new Date(iso);
-      if (!Number.isFinite(date.getTime())) return '';
-      const pad = (value) => (value < 10 ? `0${value}` : String(value));
-      return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
     }
 
     /** Coarse remaining time, matching the popover's one-line budget. */
@@ -612,6 +602,13 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = React.useState(false);
       const anchorRef = React.useRef(null);
       const closeTimer = React.useRef(0);
+      /* True while the primary button is held down inside the wrapper. A reader
+         pressing to select the popover's text must keep the panel: mousedown
+         moves focus off the trigger (blur-close fires), and a drag that crosses
+         the panel's edge fires mouseleave (grace-close fires) — both would
+         otherwise tear the panel down mid-selection, taking the selection with
+         it. */
+      const pressRef = React.useRef(false);
       const position = usePopoverPosition(open, anchorRef, wide, props.width);
 
       const cancelClose = () => {
@@ -632,6 +629,8 @@ window.__ModuleLoader__.load({
       };
       const closeSoon = () => {
         cancelClose();
+        /* A held button is an in-progress selection, not a departure. */
+        if (pressRef.current) return;
         closeTimer.current = window.setTimeout(() => {
           closeTimer.current = 0;
           setOpenState(false);
@@ -653,11 +652,32 @@ window.__ModuleLoader__.load({
           const node = anchorRef.current;
           if (node !== null && node !== undefined && !node.contains(event.target)) closeNow();
         };
+        /* The release can land outside the wrapper (a drag that ran past the
+           panel's edge), so it is observed on the document. A release still
+           inside keeps the panel; a release outside keeps it only when the drag
+           actually produced a selection, so the reader can still copy it. */
+        const onPointerUp = (event) => {
+          if (!pressRef.current) return;
+          pressRef.current = false;
+          const node = anchorRef.current;
+          if (node !== null && node !== undefined && node.contains(event.target)) return;
+          const selection = window.getSelection();
+          if (selection !== null && selection !== undefined && selection.isCollapsed === false) return;
+          closeNow();
+        };
+        const onPointerCancel = () => {
+          pressRef.current = false;
+        };
         document.addEventListener('keydown', onKey);
         document.addEventListener('pointerdown', onPointer);
+        document.addEventListener('pointerup', onPointerUp);
+        document.addEventListener('pointercancel', onPointerCancel);
         return () => {
           document.removeEventListener('keydown', onKey);
           document.removeEventListener('pointerdown', onPointer);
+          document.removeEventListener('pointerup', onPointerUp);
+          document.removeEventListener('pointercancel', onPointerCancel);
+          pressRef.current = false;
         };
       }, [open]);
 
@@ -667,6 +687,9 @@ window.__ModuleLoader__.load({
          popover would vanish a grace period later. */
       const onBlur = hover
         ? (event) => {
+            /* A press inside blurs the trigger on mousedown; that is the start of
+               a selection, not a departure. */
+            if (pressRef.current) return;
             const node = anchorRef.current;
             const next = event.relatedTarget;
             if (next !== null && node !== null && node !== undefined && node.contains(next)) return;
@@ -679,6 +702,13 @@ window.__ModuleLoader__.load({
         {
           className: 'dshogq-wrap',
           ref: anchorRef,
+          /* A press starting inside opens the selection window: from here until
+             the matching release nothing may close the panel. */
+          onPointerDown: (event) => {
+            if (event.button !== 0) return;
+            pressRef.current = true;
+            cancelClose();
+          },
           onMouseEnter: hover ? openNow : undefined,
           onMouseLeave: hover ? closeSoon : undefined,
           onFocus: hover ? openNow : undefined,
@@ -1014,7 +1044,7 @@ window.__ModuleLoader__.load({
      *
      * Expanding sideways instead of downwards is the point — the panel's height
      * never changes, so opening a section cannot push the sidebar around. One
-     * section owns the pane at a time, so choosing one collapses the other two.
+     * section owns the pane at a time, so choosing one collapses the other.
      */
     function ModelsPopover(props) {
       const t = props.t;
@@ -1027,7 +1057,6 @@ window.__ModuleLoader__.load({
         if (typeof props.setActive === 'function') props.setActive(active === key ? null : key);
       };
 
-      const previousIds = diff !== null && Array.isArray(diff.previousIds) ? diff.previousIds : null;
       const added = diff !== null && diff.first === false ? diff.added : [];
       const removed = diff !== null && diff.first === false ? diff.removed : [];
 
@@ -1040,11 +1069,6 @@ window.__ModuleLoader__.load({
         let detail = null;
         if (active === 'live') {
           detail = idRow(models.map((model) => model.id), null);
-        } else if (active === 'snap') {
-          detail =
-            previousIds === null
-              ? h('div', { className: 'dshogq-note' }, t('snapEmpty'))
-              : idRow(previousIds, null);
         } else if (active === 'diff') {
           detail =
             diff === null
@@ -1082,12 +1106,6 @@ window.__ModuleLoader__.load({
               label: t('liveSection'),
               meta: `${models.length} · ${clockTime(payload.fetchedAt)}`,
               onClick: () => toggle('live'),
-            }),
-            h(CatalogRow, {
-              on: active === 'snap',
-              label: t('snapSection'),
-              meta: previousIds === null ? t('snapFirst') : `${previousIds.length} · ${momentStamp(diff.at)}`,
-              onClick: () => toggle('snap'),
             }),
             h(CatalogRow, {
               on: active === 'diff',
