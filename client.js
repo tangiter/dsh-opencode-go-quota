@@ -38,8 +38,10 @@ window.__ModuleLoader__.load({
     const USAGE_ROUTE = '/opencode-go-quota/usage';
     const MODELS_ROUTE = '/opencode-go-quota/models';
     const VERSION_ROUTE = '/opencode-go-quota/version';
-    /** Where the model docs live; the popover links here rather than reciting them. */
-    const DOCS_URL = 'https://opencode.ai/docs/go';
+    /** The two links the catalog popover's footer offers, instead of the
+        documentation being recited inline. */
+    const CONSOLE_URL = 'https://opencode.ai/console';
+    const DOCS_URL = 'https://opencode.ai/zh/go';
     /** How often the page re-reads the meters; the Host caches behind it. */
     const POLL_MS = 60000;
     /** Countdown refresh cadence. */
@@ -49,10 +51,11 @@ window.__ModuleLoader__.load({
      * only when the reader asks, so they stay good for the whole page session.
      */
     const INFO_TTL_MS = Infinity;
-    /** Popover widths, before viewport clamping. */
+    /** The catalog and version popovers widen to hold a detail pane beside
+        their column; an unset width lets a shell measure itself to its content. */
     const QUOTA_WIDTH = 268;
-    const MODELS_WIDTH = 320;
-    const VERSION_WIDTH = 344;
+    const MODELS_SPLIT = 440;
+    const VERSION_SPLIT = 460;
     /** Where the previous visit's model snapshot lives. */
     const SNAPSHOT_KEY = 'opencode-go-quota:models:v1';
     /** The three metered windows, in display order. */
@@ -97,7 +100,6 @@ window.__ModuleLoader__.load({
       modelsHint: 'Every model the Go plan currently offers',
       refresh: 'Refresh',
       liveSection: 'Every model (live)',
-      liveEmpty: 'none',
       snapSection: 'Last snapshot',
       snapFirst: 'first read',
       snapEmpty: 'nothing recorded yet',
@@ -106,6 +108,7 @@ window.__ModuleLoader__.load({
       added: 'Added',
       removed: 'Removed',
       none: 'none',
+      consoleLink: 'Console',
       docsLink: 'Go docs',
       versionTitle: 'DSH version',
       versionHint: 'Check for updates',
@@ -114,7 +117,6 @@ window.__ModuleLoader__.load({
       verUnknown: 'unknown (installation not found)',
       verUpdateYes: 'update available',
       verUpdateNo: 'up to date',
-      verNewer: '{n} releases newer than this build',
       verNone: 'Nothing published is newer than this build',
       verChannelBeyond: 'newer than latest',
       verChanges: 'What changed',
@@ -157,7 +159,6 @@ window.__ModuleLoader__.load({
         modelsHint: 'Go 套餐当前提供的全部模型',
         refresh: '刷新',
         liveSection: '全部模型（实时）',
-        liveEmpty: '无',
         snapSection: '上次获取（快照）',
         snapFirst: '首次',
         snapEmpty: '尚无快照',
@@ -166,6 +167,7 @@ window.__ModuleLoader__.load({
         added: '新增',
         removed: '下架',
         none: '无',
+        consoleLink: '控制台',
         docsLink: 'Go 官方文档',
         versionTitle: 'DSH 版本',
         versionHint: '检查更新',
@@ -174,7 +176,6 @@ window.__ModuleLoader__.load({
         verUnknown: '未知（找不到安装位置）',
         verUpdateYes: '有新版本',
         verUpdateNo: '已是最新',
-        verNewer: '比当前新的版本 {n} 个',
         verNone: '当前版本已是最新发布',
         verChannelBeyond: '晚于 latest',
         verChanges: '更新内容',
@@ -219,7 +220,7 @@ window.__ModuleLoader__.load({
          4px padding, .5px hairlines, host scrollbar tokens, hidden overflow so
          the rounded corners clip the scrolling child. */
       '.dshogq-pop{position:fixed;z-index:1100;box-sizing:border-box;width:max-content;',
-      'min-width:200px;max-width:min(420px,calc(100vw - 32px));max-height:min(420px,calc(100vh - 96px));',
+      'min-width:200px;max-width:min(460px,calc(100vw - 32px));max-height:min(420px,calc(100vh - 96px));',
       'border:0;border-radius:var(--dsw-radius-md);padding:4px;overflow:hidden;display:flex;flex-direction:column;',
       '--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent);',
       /* The host's own menu surface is deliberately translucent (58% light /
@@ -260,14 +261,25 @@ window.__ModuleLoader__.load({
       '.dshogq-secttitle{display:flex;align-items:baseline;gap:8px;font-size:11px;font-weight:500;',
       'color:var(--dsw-alias-label-tertiary);}',
       '.dshogq-count{margin-left:auto;font-weight:400;font-variant-numeric:tabular-nums;}',
-      '.dshogq-secthead{display:flex;align-items:center;gap:6px;width:100%;padding:0;border:none;outline:none;',
+      /* The catalog splits sideways: a fixed column of rows, and a pane holding
+         whichever row is open. The detail is capped, so the panel's height
+         never moves no matter which section is chosen. */
+      '.dshogq-pane{display:flex;align-items:stretch;}',
+      /* The column keeps whatever width its own rows need, however much room
+         the pane beside it asks for: flex would otherwise squeeze it, and the
+         column is meant to sit exactly where it was before the pane appeared. */
+      '.dshogq-nav{display:flex;flex-direction:column;gap:2px;flex:none;}',
+      '.dshogq-detail{display:flex;flex-direction:column;min-width:0;overflow:hidden;flex:1 1 0;',
+      'border-left:.5px solid var(--dsw-alias-border-l1);}',
+      '.dshogq-detailbody{padding:2px 0 2px 8px;max-height:220px;overflow-y:auto;overflow-x:hidden;}',
+      '.dshogq-navrow{display:flex;align-items:center;gap:6px;padding:6px 8px;border:none;outline:none;',
       'background:0 0;cursor:pointer;color:inherit;font:inherit;font-size:11px;font-weight:500;line-height:16px;',
-      'text-align:left;}',
-      '.dshogq-secthead:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));',
-      'border-radius:var(--dsw-radius-xs);}',
-      '.dshogq-sectlabel{color:var(--dsw-alias-label-tertiary);transition:color .12s var(--ds-ease-in-out);}',
-      '.dshogq-secthead:hover .dshogq-sectlabel{color:var(--dsw-alias-label-primary);}',
-      '.dshogq-sectmeta{margin-left:auto;font-weight:400;color:var(--dsw-alias-label-tertiary);',
+      'text-align:left;border-radius:var(--dsw-radius-xs);}',
+      '.dshogq-navrow[data-on="true"]{background:var(--dsw-alias-interactive-bg-hover);}',
+      '.dshogq-navrow:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));}',
+      '.dshogq-navlabel{color:var(--dsw-alias-label-tertiary);transition:color .12s var(--ds-ease-in-out);}',
+      '.dshogq-navrow[data-on="true"] .dshogq-navlabel,.dshogq-navrow:hover .dshogq-navlabel{color:var(--dsw-alias-label-primary);}',
+      '.dshogq-navmeta{margin-left:auto;font-weight:400;color:var(--dsw-alias-label-tertiary);',
       'font-variant-numeric:tabular-nums;}',
       '.dshogq-caret{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .12s var(--ds-ease-in-out);}',
       '.dshogq-caret[data-open="true"]{transform:rotate(90deg);}',
@@ -277,6 +289,8 @@ window.__ModuleLoader__.load({
       '.dshogq-diffrow>.dshogq-ids{flex:1;min-width:0;margin-top:0;}',
       '.dshogq-link{color:var(--dsw-alias-brand-primary);text-decoration:none;}',
       '.dshogq-link:hover{text-decoration:underline;}',
+      '.dshogq-links{display:flex;align-items:center;gap:6px;}',
+      '.dshogq-linksep{color:var(--dsw-alias-label-tertiary);}',
       '.dshogq-ids{display:flex;flex-wrap:wrap;gap:3px;margin-top:5px;}',
       '.dshogq-id{font-family:var(--ds-font-family-code);font-size:11px;padding:1px 5px;',
       'border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-module-platform);',
@@ -523,10 +537,14 @@ window.__ModuleLoader__.load({
           const node = anchorRef.current;
           if (node === null || node === undefined) return;
           const rect = node.getBoundingClientRect();
-          const clamped = Math.min(width, Math.max(200, window.innerWidth - 16));
+          /* An unset width means "size to the content": the panel measures
+             itself, and the guess below only keeps the clamp honest. */
+          const sized = Number.isFinite(width);
+          const guess = sized ? width : 300;
+          const clamped = Math.min(guess, Math.max(200, window.innerWidth - 16));
           const left = wide ? rect.left : rect.right + 8;
           setPosition({
-            width: clamped,
+            width: sized ? clamped : undefined,
             left: Math.max(8, Math.min(left, window.innerWidth - clamped - 8)),
             bottom: Math.max(8, window.innerHeight - rect.top + 8),
           });
@@ -602,21 +620,26 @@ window.__ModuleLoader__.load({
           closeTimer.current = 0;
         }
       };
+      /* One funnel for the open flag, so a cell can reset its own popover state
+         when the popover closes without owning that state itself. */
+      const setOpenState = (value) => {
+        setOpen(value);
+        if (typeof props.onOpenChange === 'function') props.onOpenChange(value);
+      };
       const openNow = () => {
         cancelClose();
-        setOpen(true);
-        if (typeof props.onOpen === 'function') props.onOpen();
+        setOpenState(true);
       };
       const closeSoon = () => {
         cancelClose();
         closeTimer.current = window.setTimeout(() => {
           closeTimer.current = 0;
-          setOpen(false);
+          setOpenState(false);
         }, 140);
       };
       const closeNow = () => {
         cancelClose();
-        setOpen(false);
+        setOpenState(false);
       };
 
       React.useEffect(() => cancelClose, []);
@@ -638,6 +661,19 @@ window.__ModuleLoader__.load({
         };
       }, [open]);
 
+      /* Focus lives on the wrapper, not the button, and a focus that moves into
+         the popover does not close it. Handled on the button it would blur the
+         moment a reader clicked a section row or the refresh icon, and the
+         popover would vanish a grace period later. */
+      const onBlur = hover
+        ? (event) => {
+            const node = anchorRef.current;
+            const next = event.relatedTarget;
+            if (next !== null && node !== null && node !== undefined && node.contains(next)) return;
+            closeSoon();
+          }
+        : undefined;
+
       return h(
         'span',
         {
@@ -645,6 +681,8 @@ window.__ModuleLoader__.load({
           ref: anchorRef,
           onMouseEnter: hover ? openNow : undefined,
           onMouseLeave: hover ? closeSoon : undefined,
+          onFocus: hover ? openNow : undefined,
+          onBlur: onBlur,
         },
         h(
           'button',
@@ -658,8 +696,6 @@ window.__ModuleLoader__.load({
             'aria-expanded': open,
             'aria-label': props.title,
             title: open ? undefined : props.hint,
-            onFocus: hover ? openNow : undefined,
-            onBlur: hover ? closeSoon : undefined,
             /* Hover owns the popover for every cell, so a click only re-asserts
                the open state instead of fighting the pointer. */
             onClick: hover ? openNow : () => (open ? closeNow() : openNow()),
@@ -948,37 +984,37 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** One collapsible inventory: a header carrying a count and a stamp. */
-    function ModelSection(props) {
-      const [open, setOpen] = React.useState(false);
-      const rows = Array.isArray(props.rows) ? props.rows : null;
+    /** One row in the catalog's column; the caret tracks the pane it owns. */
+    function CatalogRow(props) {
       return h(
-        'div',
-        { className: 'dshogq-sect' },
+        'button',
+        {
+          type: 'button',
+          className: 'dshogq-navrow',
+          'data-on': props.on === true ? 'true' : 'false',
+          'aria-expanded': props.on === true,
+          onClick: props.onClick,
+        },
         h(
-          'button',
-          {
-            type: 'button',
-            className: 'dshogq-secthead',
-            'aria-expanded': open,
-            onClick: () => setOpen((value) => !value),
-          },
-          h('span', { className: 'dshogq-caret', 'data-open': open ? 'true' : 'false', 'aria-hidden': true }, '▸'),
-          h('span', { className: 'dshogq-sectlabel' }, props.label),
-          h('span', { className: 'dshogq-sectmeta' }, props.meta),
+          'span',
+          { className: 'dshogq-caret', 'data-open': props.on === true ? 'true' : 'false', 'aria-hidden': true },
+          '▸',
         ),
-        !open
+        h('span', { className: 'dshogq-navlabel' }, props.label),
+        props.chip === null || props.chip === undefined
           ? null
-          : rows === null || rows.length === 0
-            ? h('div', { className: 'dshogq-note' }, props.empty)
-            : h('div', { className: 'dshogq-scroll' }, idRow(rows, props.tone)),
+          : h('span', { className: 'dshogq-chip', 'data-tone': props.chip.tone }, props.chip.text),
+        h('span', { className: 'dshogq-navmeta' }, props.meta),
       );
     }
 
     /**
-     * The model catalog: two collapsible inventories — this read, and the
-     * snapshot it replaced — the difference between them, and a link to the
-     * documentation rather than a recital of it.
+     * The model catalog: a fixed column of three collapsible inventories, and a
+     * detail pane that opens beside whichever one is chosen.
+     *
+     * Expanding sideways instead of downwards is the point — the panel's height
+     * never changes, so opening a section cannot push the sidebar around. One
+     * section owns the pane at a time, so choosing one collapses the other two.
      */
     function ModelsPopover(props) {
       const t = props.t;
@@ -986,6 +1022,14 @@ window.__ModuleLoader__.load({
       const diff = props.diff;
       const payload = state.phase === 'ready' ? state.payload : null;
       const models = payload !== null && Array.isArray(payload.models) ? payload.models : [];
+      const active = props.active === undefined ? null : props.active;
+      const toggle = (key) => {
+        if (typeof props.setActive === 'function') props.setActive(active === key ? null : key);
+      };
+
+      const previousIds = diff !== null && Array.isArray(diff.previousIds) ? diff.previousIds : null;
+      const added = diff !== null && diff.first === false ? diff.added : [];
+      const removed = diff !== null && diff.first === false ? diff.removed : [];
 
       let body;
       if (state.phase === 'loading') {
@@ -993,57 +1037,68 @@ window.__ModuleLoader__.load({
       } else if (state.phase === 'error' || payload === null) {
         body = h('div', { className: 'dshogq-msg' }, failureLine(state, t));
       } else {
-        const previousIds = diff !== null && Array.isArray(diff.previousIds) ? diff.previousIds : null;
-        const added = diff !== null && diff.first === false ? diff.added : [];
-        const removed = diff !== null && diff.first === false ? diff.removed : [];
-
-        const diffBody =
-          diff === null
-            ? h('div', { className: 'dshogq-note' }, t('loading'))
-            : diff.first
-              ? h('div', { className: 'dshogq-note' }, fill(t('snapFirstNote'), { n: models.length }))
-              : h(
-                  'div',
-                  { className: 'dshogq-diff' },
-                  h(
+        let detail = null;
+        if (active === 'live') {
+          detail = idRow(models.map((model) => model.id), null);
+        } else if (active === 'snap') {
+          detail =
+            previousIds === null
+              ? h('div', { className: 'dshogq-note' }, t('snapEmpty'))
+              : idRow(previousIds, null);
+        } else if (active === 'diff') {
+          detail =
+            diff === null
+              ? h('div', { className: 'dshogq-note' }, t('loading'))
+              : diff.first
+                ? h('div', { className: 'dshogq-note' }, fill(t('snapFirstNote'), { n: models.length }))
+                : h(
                     'div',
-                    { className: 'dshogq-diffrow' },
-                    h('span', { className: 'dshogq-difflabel' }, t('removed')),
-                    removed.length === 0
-                      ? h('span', { className: 'dshogq-note' }, t('none'))
-                      : idRow(removed, 'gone'),
-                  ),
-                  h(
-                    'div',
-                    { className: 'dshogq-diffrow' },
-                    h('span', { className: 'dshogq-difflabel' }, t('added')),
-                    added.length === 0 ? h('span', { className: 'dshogq-note' }, t('none')) : idRow(added, 'new'),
-                  ),
-                );
+                    { className: 'dshogq-diff' },
+                    h(
+                      'div',
+                      { className: 'dshogq-diffrow' },
+                      h('span', { className: 'dshogq-difflabel' }, t('removed')),
+                      removed.length === 0
+                        ? h('span', { className: 'dshogq-note' }, t('none'))
+                        : idRow(removed, 'gone'),
+                    ),
+                    h(
+                      'div',
+                      { className: 'dshogq-diffrow' },
+                      h('span', { className: 'dshogq-difflabel' }, t('added')),
+                      added.length === 0 ? h('span', { className: 'dshogq-note' }, t('none')) : idRow(added, 'new'),
+                    ),
+                  );
+        }
 
         body = h(
           'div',
-          null,
-          h(ModelSection, {
-            label: t('liveSection'),
-            meta: `${models.length} · ${clockTime(payload.fetchedAt)}`,
-            rows: models.map((model) => model.id),
-            empty: t('liveEmpty'),
-            tone: null,
-          }),
-          h(ModelSection, {
-            label: t('snapSection'),
-            meta: previousIds === null ? t('snapFirst') : `${previousIds.length} · ${momentStamp(diff.at)}`,
-            rows: previousIds,
-            empty: t('snapEmpty'),
-            tone: null,
-          }),
+          { className: 'dshogq-pane' },
           h(
             'div',
-            { className: 'dshogq-sect' },
-            h('div', { className: 'dshogq-secttitle' }, t('diffSection')),
-            diffBody,
+            { className: 'dshogq-nav' },
+            h(CatalogRow, {
+              on: active === 'live',
+              label: t('liveSection'),
+              meta: `${models.length} · ${clockTime(payload.fetchedAt)}`,
+              onClick: () => toggle('live'),
+            }),
+            h(CatalogRow, {
+              on: active === 'snap',
+              label: t('snapSection'),
+              meta: previousIds === null ? t('snapFirst') : `${previousIds.length} · ${momentStamp(diff.at)}`,
+              onClick: () => toggle('snap'),
+            }),
+            h(CatalogRow, {
+              on: active === 'diff',
+              label: t('diffSection'),
+              meta: diff === null || diff.first === true ? '—' : String(added.length + removed.length),
+              onClick: () => toggle('diff'),
+            }),
           ),
+          detail === null
+            ? null
+            : h('div', { className: 'dshogq-detail' }, h('div', { className: 'dshogq-detailbody' }, detail)),
         );
       }
 
@@ -1051,28 +1106,41 @@ window.__ModuleLoader__.load({
         PopoverBox,
         {
           position: props.position,
-          width: MODELS_WIDTH,
+          width: active === null ? undefined : MODELS_SPLIT,
           title: t('modelsTitle'),
           subtitle: payload === null ? null : fill(t('checkedAt'), { time: clockTime(payload.fetchedAt) }),
           onRefresh: props.onRefresh,
           busy: props.busy === true,
           refreshLabel: t('refresh'),
           footer: h(
-            'a',
-            { className: 'dshogq-link', href: DOCS_URL, target: '_blank', rel: 'noreferrer' },
-            `${t('docsLink')} ↗`,
+            'span',
+            { className: 'dshogq-links' },
+            h(
+              'a',
+              { className: 'dshogq-link', href: CONSOLE_URL, target: '_blank', rel: 'noreferrer' },
+              t('consoleLink'),
+            ),
+            h('span', { className: 'dshogq-linksep', 'aria-hidden': true }, '·'),
+            h('a', { className: 'dshogq-link', href: DOCS_URL, target: '_blank', rel: 'noreferrer' }, t('docsLink')),
           ),
         },
         body,
       );
     }
 
-    /** The version popover: three milestones, then the changelog of what is newer. */
+    /**
+     * The version popover: a column of collapsible rows beside a detail pane,
+     * the same shape as the catalog popover so the two read as one family.
+     */
     function VersionPopover(props) {
       const t = props.t;
       const state = props.state;
       const payload = state.phase === 'ready' ? state.payload : null;
       const locale = props.locale;
+      const active = props.active === undefined ? null : props.active;
+      const toggle = (key) => {
+        if (typeof props.setActive === 'function') props.setActive(active === key ? null : key);
+      };
 
       /* One milestone row: label, version, its publish date, then any chip. */
       const milestone = (label, version, date, tone) =>
@@ -1097,93 +1165,106 @@ window.__ModuleLoader__.load({
       } else {
         const channels = payload.channels !== null && typeof payload.channels === 'object' ? payload.channels : {};
         const dates = payload.channelDates !== null && typeof payload.channelDates === 'object' ? payload.channelDates : {};
-        const rows = [
-          milestone(t('verCurrent'), payload.current === null ? t('verUnknown') : payload.current, null, null),
-          milestone(
-            t('verLatest'),
-            payload.latest,
-            dates.latest ?? null,
-            payload.latest === null || payload.current === null
-              ? null
-              : payload.updateAvailable
-                ? { tone: 'warn', text: t('verUpdateYes') }
-                : { tone: 'ok', text: t('verUpdateNo') },
-          ),
-        ];
-        if (typeof channels.alpha === 'string' && channels.alpha !== payload.latest) {
-          rows.push(milestone('alpha', channels.alpha, dates.alpha ?? null, null));
-        }
-        if (typeof channels.next === 'string' && channels.next !== payload.latest && channels.next !== channels.alpha) {
-          rows.push(milestone('next', channels.next, dates.next ?? null, null));
-        }
+        const releases = Array.isArray(payload.releases) ? payload.releases : [];
+
+        /* The headline signal — whether anything is published above this build —
+           rides in the collapsed row so it never needs opening to be seen. */
+        const status =
+          payload.latest === null || payload.current === null
+            ? null
+            : payload.updateAvailable
+              ? { tone: 'warn', text: t('verUpdateYes') }
+              : { tone: 'ok', text: t('verUpdateNo') };
 
         const notes = [];
         if (payload.registryOk !== true) {
-          notes.push(h('div', { className: 'dshogq-msg', key: 'registry' }, fill(t('errRegistry'), { detail: payload.registryMessage || '' })));
+          notes.push(
+            h('div', { className: 'dshogq-msg', key: 'registry' }, fill(t('errRegistry'), { detail: payload.registryMessage || '' })),
+          );
         }
         if (payload.releasesOk !== true) {
-          notes.push(h('div', { className: 'dshogq-msg', key: 'releases' }, fill(t('errReleases'), { detail: payload.releasesMessage || '' })));
+          notes.push(
+            h('div', { className: 'dshogq-msg', key: 'releases' }, fill(t('errReleases'), { detail: payload.releasesMessage || '' })),
+          );
         }
 
-        const releases = Array.isArray(payload.releases) ? payload.releases : [];
+        const milestones = h(
+          'div',
+          { className: 'dshogq-rows' },
+          milestone(t('verCurrent'), payload.current === null ? t('verUnknown') : payload.current, null, null),
+          milestone(t('verLatest'), payload.latest, dates.latest ?? null, status),
+          typeof channels.alpha === 'string' && channels.alpha !== payload.latest
+            ? milestone('alpha', channels.alpha, dates.alpha ?? null, null)
+            : null,
+          typeof channels.next === 'string' && channels.next !== payload.latest && channels.next !== channels.alpha
+            ? milestone('next', channels.next, dates.next ?? null, null)
+            : null,
+        );
+
         const changelog =
           releases.length === 0
             ? h('div', { className: 'dshogq-note' }, t('verNone'))
-            : h(
-                'div',
-                { className: 'dshogq-scroll' },
-                releases.map((release) => {
-                  const lines = releaseLines(release.body, locale);
-                  return h(
+            : releases.map((release) => {
+                const lines = releaseLines(release.body, locale);
+                return h(
+                  'div',
+                  { className: 'dshogq-ver', key: release.tag },
+                  h(
                     'div',
-                    { className: 'dshogq-ver', key: release.tag },
-                    h(
-                      'div',
-                      { className: 'dshogq-verhead' },
-                      h('span', { className: 'dshogq-vertag' }, release.version),
-                      h('span', { className: 'dshogq-chip' }, release.channel),
-                      release.beyondLatest === true
-                        ? h('span', { className: 'dshogq-chip', 'data-tone': 'warn' }, t('verChannelBeyond'))
-                        : null,
-                      h('span', { className: 'dshogq-verdate' }, dayStamp(release.publishedAt)),
-                    ),
-                    lines.length === 0
-                      ? h('div', { className: 'dshogq-logtext' }, t('verNoNotes'))
-                      : h(
-                          'div',
-                          { className: 'dshogq-log' },
-                          lines.map((line, index) =>
-                            line.kind === 'heading'
-                              ? h('div', { className: 'dshogq-logheading', key: index }, line.text)
-                              : line.kind === 'item'
-                                ? h('div', { className: 'dshogq-logitem', key: index }, line.text)
-                                : h('div', { className: 'dshogq-logtext', key: index }, line.text),
-                          ),
+                    { className: 'dshogq-verhead' },
+                    h('span', { className: 'dshogq-vertag' }, release.version),
+                    h('span', { className: 'dshogq-chip' }, release.channel),
+                    release.beyondLatest === true
+                      ? h('span', { className: 'dshogq-chip', 'data-tone': 'warn' }, t('verChannelBeyond'))
+                      : null,
+                    h('span', { className: 'dshogq-verdate' }, dayStamp(release.publishedAt)),
+                  ),
+                  lines.length === 0
+                    ? h('div', { className: 'dshogq-logtext' }, t('verNoNotes'))
+                    : h(
+                        'div',
+                        { className: 'dshogq-log' },
+                        lines.map((line, index) =>
+                          line.kind === 'heading'
+                            ? h('div', { className: 'dshogq-logheading', key: index }, line.text)
+                            : line.kind === 'item'
+                              ? h('div', { className: 'dshogq-logitem', key: index }, line.text)
+                              : h('div', { className: 'dshogq-logtext', key: index }, line.text),
                         ),
-                  );
-                }),
-              );
+                      ),
+                );
+              });
+
+        let detail = null;
+        if (active === 'where') {
+          detail = h('div', null, milestones, notes.length > 0 ? h('div', null, notes) : null);
+        } else if (active === 'notes') {
+          detail = h('div', { className: 'dshogq-scroll' }, changelog);
+        }
 
         body = h(
           'div',
-          null,
-          h('div', { className: 'dshogq-rows' }, rows),
-          notes,
+          { className: 'dshogq-pane' },
           h(
             'div',
-            { className: 'dshogq-sect' },
-            h(
-              'div',
-              { className: 'dshogq-secttitle' },
-              h('span', null, t('verChanges')),
-              h(
-                'span',
-                { className: 'dshogq-count' },
-                releases.length === 0 ? t('verUpdateNo') : fill(t('verNewer'), { n: payload.newerCount }),
-              ),
-            ),
-            changelog,
+            { className: 'dshogq-nav' },
+            h(CatalogRow, {
+              on: active === 'where',
+              label: t('verCurrent'),
+              meta: payload.current === null ? t('verUnknown') : payload.current,
+              chip: status,
+              onClick: () => toggle('where'),
+            }),
+            h(CatalogRow, {
+              on: active === 'notes',
+              label: t('verChanges'),
+              meta: String(payload.newerCount),
+              onClick: () => toggle('notes'),
+            }),
           ),
+          detail === null
+            ? null
+            : h('div', { className: 'dshogq-detail' }, h('div', { className: 'dshogq-detailbody' }, detail)),
         );
       }
 
@@ -1191,7 +1272,7 @@ window.__ModuleLoader__.load({
         PopoverBox,
         {
           position: props.position,
-          width: VERSION_WIDTH,
+          width: active === null ? undefined : VERSION_SPLIT,
           title: t('versionTitle'),
           subtitle: payload === null ? null : fill(t('checkedAt'), { time: clockTime(payload.fetchedAt) }),
           onRefresh: props.onRefresh,
@@ -1280,6 +1361,13 @@ window.__ModuleLoader__.load({
     }
 
     /** Build the OpenCode-mark cell: the model catalog and what moved in it. */
+    /**
+     * Build the OpenCode-mark cell: the model column beside a detail pane.
+     *
+     * The chosen section lives here rather than inside the popover so the
+     * popover's width can follow it (and the placement be recomputed), and so
+     * that closing the popover collapses the column again.
+     */
     function makeModelsCell() {
       return function OpenCodeGoModels(props) {
         const wide = !!(props && props.wide);
@@ -1293,18 +1381,24 @@ window.__ModuleLoader__.load({
            are behind" — that condition never clears, and a dot that is always
            on has stopped saying anything. */
         const updated = diff !== null && diff.first === false && (diff.added.length > 0 || diff.removed.length > 0);
+        const [active, setActive] = React.useState(null);
 
         return h(
           CellShell,
           {
             wide: wide,
             mode: 'hover',
-            width: MODELS_WIDTH,
+            /* Collapsed, the panel measures itself; widening only happens when
+               a section opens, and the column keeps its place throughout. */
+            width: active === null ? undefined : MODELS_SPLIT,
             title: t('modelsTitle'),
             hint: t('modelsHint'),
             glyph: h(OpenCodeMark, { height: 16 }),
             label: wide && payload !== null ? String(payload.total) : null,
             badge: updated,
+            onOpenChange: (isOpen) => {
+              if (!isOpen) setActive(null);
+            },
             renderPopover: (position) =>
               h(ModelsPopover, {
                 position: position,
@@ -1313,6 +1407,8 @@ window.__ModuleLoader__.load({
                 diff: diff,
                 busy: remote.busy,
                 onRefresh: remote.refresh,
+                active: active,
+                setActive: setActive,
               }),
           },
         );
@@ -1320,6 +1416,12 @@ window.__ModuleLoader__.load({
     }
 
     /** Build the version cell: the running Harness build against published ones. */
+    /**
+     * Build the version cell: the Harness build against published ones.
+     *
+     * The chosen row lives here so the popover's width can follow it and so
+     * closing the popover collapses the column again — same as the catalog.
+     */
     function makeVersionCell() {
       return function OpenCodeGoVersion(props) {
         const wide = !!(props && props.wide);
@@ -1329,18 +1431,22 @@ window.__ModuleLoader__.load({
 
         const remote = useRemote(VERSION_ROUTE, INFO_TTL_MS);
         const payload = remote.state.phase === 'ready' ? remote.state.payload : null;
+        const [active, setActive] = React.useState(null);
 
         return h(
           CellShell,
           {
             wide: wide,
             mode: 'hover',
-            width: VERSION_WIDTH,
+            width: active === null ? undefined : VERSION_SPLIT,
             title: t('versionTitle'),
             hint: t('versionHint'),
             glyph: h(VersionGlyph, null),
             label: 'Ver',
             badge: payload !== null && payload.updateAvailable === true,
+            onOpenChange: (isOpen) => {
+              if (!isOpen) setActive(null);
+            },
             renderPopover: (position) =>
               h(VersionPopover, {
                 position: position,
@@ -1349,6 +1455,8 @@ window.__ModuleLoader__.load({
                 locale: locale,
                 busy: remote.busy,
                 onRefresh: remote.refresh,
+                active: active,
+                setActive: setActive,
               }),
           },
         );
