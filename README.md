@@ -77,10 +77,58 @@ Host 半边仍然计算并返回 `docsBaseline`（内置的 2026-10-15 文档清
 | `/opencode-go-quota/usage` | `GET <baseUrl>/usage` | `refreshMs`（默认 60 秒） |
 | `/opencode-go-quota/models` | `GET <baseUrl>/models` | `infoRefreshMs`（默认 15 分钟） |
 | `/opencode-go-quota/version` | npm registry + GitHub Release | `infoRefreshMs` |
+| `/opencode-go-quota/models/sync`（**仅 POST**） | 上述 `/models` ＋ 逐个模型实测 | 无（动作路由，写完即返回） |
 
 模型目录里**没有可用的"新旧"信号**（37 个条目的 `created` 时间戳完全相同），所以"更新了哪些模型"
 由两条显式基准回答：内置的官方文档清单（下方 `DOCS_BASELINE_MODELS`，带日期），以及浏览器里
 保存的上次快照。后者存在 `localStorage` 的 `opencode-go-quota:models:v1`。
+
+### 更新模型分栏（v1.4.0）
+
+弹层页脚在 **Go 官方文档** 右边多了一个 **更新模型** 按钮。它解决的是这个问题：实时目录里出现的
+模型，`pi-ai` 内置快照要等到依赖升级才认识，在那之前 DSH 的目录路由根本看不到它们。
+
+点一下，Host 会依次做：
+
+1. 读 `pi-ai` 内置的 `opencode-go.json` 快照（30 个模型，含各自协议）
+2. 拉实时 `/models`（37 个）
+3. 算差集 ＝ 目录外模型
+4. 逐个实测协议：`chat/completions` → `/messages`（用 `x-api-key`）→ `/responses`
+5. 实测视觉与推理
+6. 按协议分栏生成 YAML，整块写回 `cordis.patch.yml`
+
+**为什么必须按协议分栏**：DSH 的 `api` 是 provider 级字段，`PiAiModelProfile` 里根本没有 `api`，
+所以一种协议只能占一栏。而同一个网关里方言并不统一 —— 实测 `claude-haiku-5-5` 只认
+`anthropic-messages`，`gpt-6-luna` 只认 `openai-responses`，其余多数吃 `openai-completions`。
+
+写入范围只有 `cordis.patch.yml` 里的标记区块，块外一个字节都不动：
+
+```yaml
+      # >>> BEGIN auto-managed: opencode-go-quota
+      opencode-go-new: ...
+      # <<< END auto-managed: opencode-go-quota
+```
+
+配合 profile 的 `patchReload: live`，写完自动热重载，不需要重启 DSH。
+
+**能力怎么判定**
+
+| 能力 | 判定方式 | 为什么这么做 |
+| --- | --- | --- |
+| 协议 | 依次试三种端点，只有 `ModelProtocolUnsupported` 才换下一个 | 其它错误（地区封锁、需同意训练）换协议也没用，直接记入跳过清单 |
+| 视觉 | 「纯文本」与「带图」两次请求的 `prompt_tokens` 增量 ≥ 5 | 图像被丢弃时正文与纯文本完全相同、增量恒为 0；而「让模型描述图像再匹配关键词」不可靠，实测有模型把红图答成 Blue，但图像 token 照样计入 |
+| 推理 | 用一道会诱发推理的题，看有没有 `reasoning_content` / thinking 块 | 手工声明的模型不写 `reasoningEfforts` 时 DSH 会当成「不推理」，所以必须先测出来 |
+
+**耗时与复用**：首次点击要对每个新模型发 4~6 个请求，约 2~5 分钟；之后点击复用区块里已有的
+结论，**3 秒左右**返回且幂等（内容没变就不写文件）。复用而不是每次重测，是为了避免上游抖动
+把已知能力反复翻面。需要强制重测时：
+
+```
+curl -X POST http://127.0.0.1:3080/opencode-go-quota/models/sync?force=1
+```
+
+**无法启用的模型**会连同具体原因一起跳过，例如 `beam-free` 与 `gpt-6-luna` 在本地区返回 403，
+`gemini-4-argon-contributor` 需要先在控制台同意「用你的数据训练」。
 
 ---
 

@@ -25,8 +25,9 @@
  * previous snapshot (kept in the browser).
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** Default Go inference base URL; endpoint paths are appended. */
 const DEFAULT_BASE_URL = 'https://opencode.ai/zen/go/v1';
@@ -37,8 +38,9 @@ const ROUTE_PREFIX = '/opencode-go-quota';
 const USAGE_PATH = `${ROUTE_PREFIX}/usage`;
 const MODELS_PATH = `${ROUTE_PREFIX}/models`;
 const VERSION_PATH = `${ROUTE_PREFIX}/version`;
+const SYNC_PATH = `${ROUTE_PREFIX}/models/sync`;
 /** Attribution header, so upstream can tell this client from a bare SDK. */
-const USER_AGENT = 'dsh-opencode-go-quota/1.2.0';
+const USER_AGENT = 'dsh-opencode-go-quota/1.4.0';
 
 /** The three metered windows, in the order the popover lists them. */
 const WINDOW_IDS = ['rolling', 'weekly', 'monthly'];
@@ -614,7 +616,554 @@ export function apply(ctx, config) {
     );
   }
 
+  // ───────────────────────────────────────────────────────────────────────
+  // 「更新模型分栏」
+  //
+  // 目标：把 Go 实时目录(/models)里有、但 pi-ai 内置快照尚未收录的模型，
+  // 逐个实测出「协议 + 视觉 + 推理」，然后重新生成 profile patch 里
+  //   # >>> BEGIN auto-managed: opencode-go-quota
+  //   # <<< END auto-managed: opencode-go-quota
+  // 之间的内容。区块外的用户手写配置一个字节都不动。
+  //
+  // 为什么要实测协议：DSH 的 `api` 是 route 级字段（PiAiModelProfile 没有
+  // api），所以一种协议必须占一栏；而同一个网关不同模型的方言并不统一
+  // （实测 claude-haiku-5-5 只说 anthropic-messages，gpt-6-luna 只说
+  //  openai-responses，其余多数吃 openai-completions）。
+  // ───────────────────────────────────────────────────────────────────────
+
+  /**
+   * 32×32 纯红 PNG（208 字符，已实测被所有候选端点接受）。
+   *
+   * 只用来让「带图 / 不带图」产生可测的 token 差值，不关心它画的是什么 ——
+   * 更大的图反而会被部分上游以 invalid_parameter 拒掉，所以刻意留小。
+   */
+  /** 判定「端点是否收图」的 prompt token 增量阈值（丢弃图像时增量为 0）。 */
+  const VISION_TOKEN_DELTA = 5;
+
+  /** 探针单次请求的超时；部分模型带图推理很慢，60s 会误判成不支持。 */
+  const PROBE_TIMEOUT_MS = 120000;
+
+  const RED_PNG_B64 =
+    'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAvSURBVFhH7c4hAQAACAMwkrx/KLqcGJiJ+c0m/SQgICAgICAgICAgICAgIPAcSA/xOFx5OIo7rwAAAABJRU5ErkJggg==';
+
+  /** 每种协议对应一栏的名字与标题。 */
+  const PROTOCOL_ROUTES = {
+    'openai-completions': { id: 'opencode-go-new', title: 'OpenCode Go · 目录外新模型', suffix: '/chat/completions' },
+    'anthropic-messages': { id: 'opencode-go-anthropic', title: 'OpenCode Go · 目录外 (Anthropic 协议)', suffix: '/messages' },
+    'openai-responses': { id: 'opencode-go-responses', title: 'OpenCode Go · 目录外 (Responses 协议)', suffix: '/responses' },
+  };
+
+  /**
+   * 跑 `fn()` 最多 `times` 次，返回第一个非 null 的结果。
+   *
+   * 探针要区分「测出来是不支持」和「根本没测成」：前者是有意义的答案，
+   * 后者只说明上游抖动（超时、瞬时 5xx）。用 null 表示没测成，才会重试。
+   */
+  async function retrying(times, fn) {
+    for (let attempt = 0; attempt < times; attempt += 1) {
+      try {
+        const value = await fn();
+        if (value !== null && value !== undefined) return value;
+      } catch (error) {
+        /* retry */
+      }
+    }
+    return null;
+  }
+
+  /** 由字符串派生稳定的 session id，重复生成不会漂移。 */
+  function stableSessionId(seed) {
+    let h1 = 0x811c9dc5;
+    let h2 = 0x1000193;
+    let h3 = 0x9e3779b1;
+    let h4 = 0x85ebca6b;
+    for (let i = 0; i < seed.length; i += 1) {
+      const c = seed.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+      h2 = Math.imul(h2 + c, 2246822519) >>> 0;
+      h3 = Math.imul(h3 ^ (c << 3), 3266489917) >>> 0;
+      h4 = Math.imul(h4 + (c << 5), 668265263) >>> 0;
+    }
+    const hex = [h1, h2, h3, h4].map((n) => n.toString(16).padStart(8, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+  }
+
+  /** 定位 pi-ai 内置的 opencode-go 目录文件（可能不在本 profile 的依赖里）。 */
+  function snapshotPath() {
+    const override = typeof process !== 'undefined' ? process.env.DSH_PI_AI_SNAPSHOT : undefined;
+    const candidates = [];
+    if (typeof override === 'string' && override.length > 0) candidates.push(override);
+
+    // 从 DSH 入口和本模块位置各自向上逐层查找 node_modules，
+    // 因为 pi-ai 属于 DSH 的依赖树，未必在 profile 自己的 node_modules 里。
+    const seeds = [];
+    if (typeof process !== 'undefined' && typeof process.argv[1] === 'string') seeds.push(process.argv[1]);
+    try {
+      seeds.push(fileURLToPath(import.meta.url));
+    } catch (error) {
+      /* import.meta unavailable in some bundlers */
+    }
+    for (const seed of seeds) {
+      let dir = dirname(seed);
+      for (let depth = 0; depth < 8; depth += 1) {
+        candidates.push(join(dir, 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers', 'data', 'opencode-go.json'));
+        const parent = dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+    }
+    for (const candidate of candidates) {
+      try {
+        readFileSync(candidate);
+        return candidate;
+      } catch (error) {
+        /* try the next candidate */
+      }
+    }
+    return null;
+  }
+
+  /** 快照里已收录的模型 id → 它们的协议与元数据。 */
+  function readSnapshot() {
+    const path = snapshotPath();
+    if (path === null) return { ok: false, code: 'no-snapshot', message: 'pi-ai snapshot not found', models: new Map(), path: null };
+    let doc;
+    try {
+      doc = JSON.parse(readFileSync(path, 'utf8'));
+    } catch (error) {
+      return { ok: false, code: 'snapshot', message: String((error && error.message) || error), models: new Map(), path };
+    }
+    const models = new Map();
+    for (const [api, group] of Object.entries(doc !== null && typeof doc === 'object' ? doc : {})) {
+      if (group === null || typeof group !== 'object') continue;
+      for (const [id, entry] of Object.entries(group)) {
+        models.set(id, {
+          api: api,
+          input: entry !== null && typeof entry === 'object' && Array.isArray(entry.input) ? entry.input : ['text'],
+        });
+      }
+    }
+    return { ok: true, path, models };
+  }
+
+  /** 一次 POST，返回 { status, body }；网络异常抛出。 */
+  async function postJson(url, extraHeaders, body, ms) {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-opencode-session': stableSessionId('opencode-go-quota-probe'),
+        'user-agent': USER_AGENT,
+        ...extraHeaders,
+      },
+      body: JSON.stringify(body),
+      signal: timeoutSignal(Math.max(ms, timeoutMs)),
+    });
+    let parsed = null;
+    try {
+      parsed = await response.json();
+    } catch (error) {
+      parsed = null;
+    }
+    return { status: response.status, body: parsed };
+  }
+
+  /** 按协议发一次纯文本请求，返回统一形状。 */
+  async function textTurn(api, id, key, prompt, maxTokens) {
+    if (api === 'anthropic-messages') {
+      const answer = await postJson(
+        `${baseUrl}/messages`,
+        { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+        { model: id, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] },
+        PROBE_TIMEOUT_MS,
+      );
+      const error = answer.body !== null && typeof answer.body === 'object' ? answer.body.error : undefined;
+      if (error !== undefined && error !== null) return { ok: false, type: error.type, message: String(error.message ?? '') };
+      const blocks = Array.isArray(answer.body?.content) ? answer.body.content : [];
+      return {
+        ok: true,
+        text: blocks.filter((b) => b?.type === 'text').map((b) => b.text).join(''),
+        thinks: blocks.some((b) => b?.type === 'thinking' || b?.type === 'reasoning'),
+        promptTokens: answer.body?.usage?.input_tokens ?? null,
+      };
+    }
+    if (api === 'openai-responses') {
+      const answer = await postJson(
+        `${baseUrl}/responses`,
+        { Authorization: `Bearer ${key}` },
+        { model: id, input: prompt, max_output_tokens: maxTokens },
+        PROBE_TIMEOUT_MS,
+      );
+      const error = answer.body !== null && typeof answer.body === 'object' ? answer.body.error : undefined;
+      if (error !== undefined && error !== null) return { ok: false, type: error.type, message: String(error.message ?? '') };
+      return { ok: true, text: String(answer.body?.output_text ?? ''), thinks: false, promptTokens: answer.body?.usage?.input_tokens ?? null };
+    }
+    const answer = await postJson(
+      `${baseUrl}/chat/completions`,
+      { Authorization: `Bearer ${key}` },
+      { model: id, messages: [{ role: 'user', content: prompt }], max_tokens: maxTokens },
+      60000,
+    );
+    const error = answer.body !== null && typeof answer.body === 'object' ? answer.body.error : undefined;
+    if (error !== undefined && error !== null) return { ok: false, type: error.type, message: String(error.message ?? '') };
+    const message = answer.body?.choices?.[0]?.message ?? {};
+    return {
+      ok: true,
+      text: String(message.content ?? ''),
+      thinks: typeof message.reasoning_content === 'string' && message.reasoning_content.length > 0,
+      promptTokens: answer.body?.usage?.prompt_tokens ?? null,
+    };
+  }
+
+  /** 按协议发一次带图请求，只回报它是否被接受以及计了多少钱的 token。 */
+  async function imageTurn(api, id, key, question) {
+    if (api === 'anthropic-messages') {
+      const answer = await postJson(
+        `${baseUrl}/messages`,
+        { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+        {
+          model: id,
+          max_tokens: 200,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: question },
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: RED_PNG_B64 } },
+              ],
+            },
+          ],
+        },
+        PROBE_TIMEOUT_MS,
+      );
+      const error = answer.body !== null && typeof answer.body === 'object' ? answer.body.error : undefined;
+      if (error !== undefined && error !== null) return { ok: false };
+      return { ok: true, promptTokens: answer.body?.usage?.input_tokens ?? null };
+    }
+    const content = [
+      { type: 'text', text: question },
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${RED_PNG_B64}` } },
+    ];
+    const isResponses = api === 'openai-responses';
+    const answer = await postJson(
+      isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`,
+      { Authorization: `Bearer ${key}` },
+      isResponses
+        ? { model: id, input: [{ role: 'user', content }], max_output_tokens: 200 }
+        : { model: id, messages: [{ role: 'user', content }], max_tokens: 200 },
+      60000,
+    );
+    const error = answer.body !== null && typeof answer.body === 'object' ? answer.body.error : undefined;
+    if (error !== undefined && error !== null) return { ok: false };
+    return {
+      ok: true,
+      promptTokens: isResponses
+        ? (answer.body?.usage?.input_tokens ?? null)
+        : (answer.body?.usage?.prompt_tokens ?? null),
+    };
+  }
+
+  /**
+   * 判定视觉支持：对比「纯文本」与「带图」两次请求的 prompt token 增量。
+   *
+   * 图像一旦被端点接受就必然计入 token，所以增量明显大于 0 就说明它真的收图。
+   * 这比「让它描述图像内容再匹配关键词」可靠得多 —— 实测个别模型对退化的
+   * 纯色小图会答错颜色（longcat 把红图读成 Blue），但它照样吃掉了图像 token。
+   * `input` 需要声明的是「端点收不收图」，而不是「它认不认得准」，所以用增量。
+   */
+  async function visionTurn(api, id, key) {
+    const question = 'Describe this image in one short sentence.';
+    let baseline;
+    try {
+      baseline = await textTurn(api, id, key, question, 80);
+    } catch (error) {
+      return null;
+    }
+    if (baseline.ok !== true) return null;
+
+    let withImage;
+    try {
+      withImage = await imageTurn(api, id, key, question);
+    } catch (error) {
+      return null;
+    }
+    if (withImage.ok !== true) return null;
+
+    const before = baseline.promptTokens;
+    const after = withImage.promptTokens;
+    // 图像被丢弃时请求正文与纯文本完全相同，delta 恒为 0；只要端点收图，
+    // 不同编码器会加上 18~170 不等的 token（实测 32×32 小图的下界是 18）。
+    // 阈值取 5，既避开「完全没加」也容忍编码器的最小开销。
+    if (typeof before === 'number' && typeof after === 'number' && before > 0) return after - before >= VISION_TOKEN_DELTA;
+    return true;
+  }
+
+  /** 实测一个模型的协议、视觉、推理。 */
+  async function probeModel(id, key) {
+    const order = ['openai-completions', 'anthropic-messages', 'openai-responses'];
+    let chosen = null;
+    let lastReason = 'no protocol accepted the model';
+    for (const api of order) {
+      let answer;
+      try {
+        answer = await textTurn(api, id, key, 'Reply with exactly: OK', 200);
+      } catch (error) {
+        lastReason = `network: ${String((error && error.message) || error)}`;
+        continue;
+      }
+      if (answer.ok) {
+        chosen = api;
+        break;
+      }
+      if (answer.type === 'ModelProtocolUnsupported') continue;
+      // 地区封锁 / 需同意训练 / 上游故障：换协议也没用，直接定案
+      return { id, ok: false, reason: `${answer.type ?? 'error'}: ${String(answer.message ?? '').slice(0, 120)}` };
+    }
+    if (chosen === null) return { id, ok: false, reason: lastReason };
+
+    // 推理：用一道会诱发推理的题，看有没有 thinking/reasoning 内容。
+    // 上游偶发超时/抖动，所以每步都重试一次，并把「测出 false」与「没测出来」
+    // 区分开：没测出来就按保守值处理（不声明该能力），避免误判成不支持。
+    const thinks = await retrying(2, async () => {
+      const think = await textTurn(
+        chosen,
+        id,
+        key,
+        'A bat and a ball cost $1.10 total. The bat costs $1.00 more than the ball. How much is the ball?',
+        800,
+      );
+      if (think.ok !== true) return null;
+      return think.thinks === true;
+    });
+
+    const seen = await retrying(2, () => visionTurn(chosen, id, key));
+
+    return { id, ok: true, api: chosen, vision: seen === true, reasoning: thinks === true };
+  }
+
+  /** 把实测结果渲染成 patch 文件里的 provider 区块文本（6 空格缩进）。 */
+  function renderBlock(groups) {
+    const lines = [];
+    for (const [api, models] of Object.entries(groups)) {
+      const route = PROTOCOL_ROUTES[api];
+      if (route === undefined || models.length === 0) continue;
+      lines.push(`      ${route.id}:`);
+      lines.push(`        displayName: ${route.title}`);
+      lines.push('        apiKeyEnv: OPENCODE_GO_API_KEY');
+      lines.push(`        api: ${api}`);
+      lines.push('        baseURL: https://opencode.ai/zen/go/v1');
+      lines.push('        headers:');
+      lines.push(`          x-opencode-session: ${stableSessionId(route.id)}`);
+      lines.push('        models:');
+      for (const model of models) {
+        lines.push(`          - id: ${model.id}`);
+        if (model.name !== undefined && model.name !== null) lines.push(`            name: ${model.name}`);
+        lines.push('            contextWindow: 262144');
+        lines.push('            maxTokens: 32768');
+        lines.push(`            input: [${(model.vision ? ['text', 'image'] : ['text']).join(', ')}]`);
+        if (model.reasoning) {
+          lines.push('            reasoningEfforts:');
+          lines.push('              low: low');
+          lines.push('              medium: medium');
+          lines.push('              high: high');
+        }
+      }
+    }
+    return lines.join('\n');
+  }
+
+  /** 用新生成的区块替换标记之间的旧内容；区块外一个字节都不动。 */
+  function splicePatch(text, block) {
+    const lines = text.split(/\r?\n/u);
+    const begin = lines.findIndex((line) => line.includes('>>> BEGIN auto-managed: opencode-go-quota'));
+    const end = lines.findIndex((line) => line.includes('<<< END auto-managed: opencode-go-quota'));
+    if (begin === -1 || end === -1 || end <= begin) {
+      throw new Error('auto-managed markers not found in cordis.patch.yml (expected ">>> BEGIN/<<< END auto-managed: opencode-go-quota")');
+    }
+    const next = [...lines.slice(0, begin + 1), ...block.split('\n'), ...lines.slice(end)];
+    return next.join('\n');
+  }
+
+  /** 找到当前 profile 的 patch 文件。 */
+  function patchFile() {
+    const profileDir = typeof process !== 'undefined' ? process.env.DSH_PROFILE_DIR : undefined;
+    if (typeof profileDir === 'string' && profileDir.length > 0) return join(profileDir, 'cordis.patch.yml');
+    const home = typeof process !== 'undefined' ? process.env.DSH_HOME : undefined;
+    if (typeof home === 'string' && home.length > 0) {
+      const name = typeof process !== 'undefined' ? process.env.DSH_PROFILE : undefined;
+      return join(home, 'profiles', name ?? 'web', 'cordis.patch.yml');
+    }
+    return null;
+  }
+
+  /** 从现有标记区块里恢复已知模型的能力，让重复点击不必全量重测。 */
+  function knownFromBlock(text) {
+    const known = new Map();
+    let inside = false;
+    let api = null;
+    let current = null;
+    for (const line of text.split(/\r?\n/u)) {
+      if (line.includes('>>> BEGIN auto-managed: opencode-go-quota')) {
+        inside = true;
+        continue;
+      }
+      if (line.includes('<<< END auto-managed: opencode-go-quota')) break;
+      if (!inside) continue;
+      const apiMatch = /^\s+api:\s*(\S+)\s*$/u.exec(line);
+      if (apiMatch !== null) {
+        api = apiMatch[1];
+        continue;
+      }
+      const idMatch = /^\s+-\s+id:\s*(\S+)\s*$/u.exec(line);
+      if (idMatch !== null) {
+        current = { api: api, vision: false, reasoning: false };
+        known.set(idMatch[1], current);
+        continue;
+      }
+      if (current === null) continue;
+      const inputMatch = /^\s+input:\s*\[(.*)\]\s*$/u.exec(line);
+      if (inputMatch !== null) current.vision = /image/u.test(inputMatch[1]);
+      if (/^\s+reasoningEfforts:\s*$/u.test(line)) current.reasoning = true;
+    }
+    return known;
+  }
+
+  /** 完整同步流程：算差集 → 逐个实测 → 生成区块 → 写回 → 返回报告。 */
+  async function syncModels(force) {
+    const recheck = force === true;
+    const key = await resolveApiKey();
+    if (key === undefined) {
+      return { ok: false, code: 'no-credential', message: `no credential is configured for ${apiKeyEnv}` };
+    }
+    const snapshot = readSnapshot();
+    if (snapshot.ok !== true) return { ok: false, code: snapshot.code, message: snapshot.message };
+
+    const file = patchFile();
+    if (file === null) return { ok: false, code: 'no-patch-path', message: 'cannot resolve the profile patch file' };
+
+    let before;
+    try {
+      before = readFileSync(file, 'utf8');
+    } catch (error) {
+      return { ok: false, code: 'read-patch', message: String((error && error.message) || error) };
+    }
+
+    // 已经测过的模型直接复用上一轮结论：既让重复点击变快，也避免上游抖动把
+    // 已知能力反复翻面（一次误判就会让 input 少声明 image）。
+    const known = knownFromBlock(before);
+
+    const catalog = await goJson('/models', 'the models endpoint');
+    if (catalog.ok !== true) return Object.assign({ ok: false }, catalog);
+    const list = catalog.body !== null && typeof catalog.body === 'object' ? catalog.body.data : undefined;
+    const live = (Array.isArray(list) ? list : [])
+      .filter((row) => row !== null && typeof row === 'object' && typeof row.id === 'string')
+      .map((row) => row.id)
+      .sort();
+
+    const missing = live.filter((id) => !snapshot.models.has(id));
+    const probes = [];
+    const reused = [];
+    for (const id of missing) {
+      const memo = known.get(id);
+      if (recheck !== true && memo !== undefined) {
+        probes.push({ id, ok: true, api: memo.api, vision: memo.vision, reasoning: memo.reasoning });
+        reused.push(id);
+        continue;
+      }
+      try {
+        probes.push(await probeModel(id, key));
+      } catch (error) {
+        probes.push({ id, ok: false, reason: `probe threw: ${String((error && error.message) || error)}` });
+      }
+    }
+
+    const groups = {};
+    const skipped = [];
+    for (const probe of probes) {
+      if (probe.ok !== true) {
+        skipped.push({ id: probe.id, reason: probe.reason });
+        continue;
+      }
+      groups[probe.api] = groups[probe.api] ?? [];
+      groups[probe.api].push({ id: probe.id, vision: probe.vision, reasoning: probe.reasoning });
+    }
+
+    const block = renderBlock(groups);
+    let after;
+    try {
+      after = splicePatch(before, block);
+    } catch (error) {
+      return { ok: false, code: 'splice', message: String((error && error.message) || error) };
+    }
+
+    const changed = after !== before;
+    if (changed) {
+      try {
+        writeFileSync(file, after, 'utf8');
+      } catch (error) {
+        return { ok: false, code: 'write-patch', message: String((error && error.message) || error) };
+      }
+    }
+
+    return {
+      ok: true,
+      fetchedAt: new Date().toISOString(),
+      liveCount: live.length,
+      snapshotCount: snapshot.models.size,
+      snapshotPath: snapshot.path,
+      patchFile: file,
+      changed: changed,
+      reused: reused,
+      applied: Object.entries(groups).map(([api, models]) => ({
+        api: api,
+        provider: PROTOCOL_ROUTES[api]?.id ?? api,
+        models: models.map((m) => ({ id: m.id, vision: m.vision, reasoning: m.reasoning })),
+      })),
+      skipped: skipped,
+      live: live,
+    };
+  }
+
+  /** 注册一个允许 POST 的动作路由（写操作只开放 POST）。 */
+  function registerAction(path, what, produce) {
+    ctx.effect(
+      () =>
+        ctx.webServer.register({
+          kind: 'exact',
+          path: path,
+          handler: async (req, res) => {
+            const connection = ctx.get('connection');
+            if (connection !== undefined && typeof connection.requestRejection === 'function') {
+              const rejection = connection.requestRejection(req);
+              if (rejection !== undefined) {
+                res.statusCode = rejection;
+                res.end();
+                return;
+              }
+            }
+            if (req.method !== 'POST') {
+              res.statusCode = 405;
+              res.setHeader('allow', 'POST');
+              res.end();
+              return;
+            }
+            let payload;
+            try {
+              payload = await produce(req);
+            } catch (error) {
+              payload = { ok: false, code: 'internal', message: String((error && error.message) || error) };
+            }
+            sendJson(res, 200, payload, false);
+          },
+        }),
+      `opencode-go-quota: POST ${path} (${what})`,
+    );
+  }
+
   registerRoute(USAGE_PATH, 'usage', (force) => cached('usage', refreshMs, force, readUsage));
   registerRoute(MODELS_PATH, 'models', (force) => cached('models', infoRefreshMs, force, readModels));
   registerRoute(VERSION_PATH, 'version', (force) => cached('version', infoRefreshMs, force, readVersion));
+  registerAction(SYNC_PATH, 'regenerate the auto-managed model routes', (req) =>
+    syncModels(typeof req?.url === 'string' && req.url.indexOf('force=1') !== -1),
+  );
 }

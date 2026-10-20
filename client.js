@@ -38,6 +38,8 @@ window.__ModuleLoader__.load({
     const USAGE_ROUTE = '/opencode-go-quota/usage';
     const MODELS_ROUTE = '/opencode-go-quota/models';
     const VERSION_ROUTE = '/opencode-go-quota/version';
+/** Host action: regenerate the auto-managed model routes (POST only). */
+const SYNC_ROUTE = '/opencode-go-quota/models/sync';
     /** The two links the catalog popover's footer offers, instead of the
         documentation being recited inline. */
     const CONSOLE_URL = 'https://opencode.ai/console';
@@ -107,6 +109,9 @@ window.__ModuleLoader__.load({
       none: 'none',
       consoleLink: 'Console',
       docsLink: 'Go docs',
+      syncLabel: 'Update models',
+      syncBusy: 'Updating…',
+      syncHint: 'Re-probe out-of-catalog models and regenerate the model columns',
       versionTitle: 'DSH version',
       versionHint: 'Check for updates',
       verCurrent: 'Current',
@@ -163,6 +168,9 @@ window.__ModuleLoader__.load({
         none: '无',
         consoleLink: '控制台',
         docsLink: 'Go 官方文档',
+        syncLabel: '更新模型',
+        syncBusy: '更新中…',
+        syncHint: '重新探测目录外模型的协议 / 视觉 / 推理，并重建模型分栏',
         versionTitle: 'DSH 版本',
         versionHint: '检查更新',
         verCurrent: '当前',
@@ -289,6 +297,9 @@ window.__ModuleLoader__.load({
       '.dshogq-link:hover{text-decoration:underline;}',
       '.dshogq-links{display:flex;align-items:center;gap:6px;}',
       '.dshogq-linksep{color:var(--dsw-alias-label-tertiary);}',
+      '.dshogq-sync{border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:11px;line-height:1.5;padding:1px 6px;border-radius:4px;cursor:pointer;}',
+      '.dshogq-sync:hover:not(:disabled){background:var(--dsw-alias-fill-l2);}',
+      '.dshogq-sync:disabled{opacity:.6;cursor:default;}',
       '.dshogq-ids{display:flex;flex-wrap:wrap;gap:3px;margin-top:5px;}',
       '.dshogq-id{font-family:var(--ds-font-family-code);font-size:11px;padding:1px 5px;',
       'border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-module-platform);',
@@ -1140,6 +1151,22 @@ window.__ModuleLoader__.load({
             ),
             h('span', { className: 'dshogq-linksep', 'aria-hidden': true }, '·'),
             h('a', { className: 'dshogq-link', href: DOCS_URL, target: '_blank', rel: 'noreferrer' }, t('docsLink')),
+            h('span', { className: 'dshogq-linksep', 'aria-hidden': true }, '·'),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dshogq-sync',
+                disabled: props.sync !== null && props.sync !== undefined && props.sync.busy === true,
+                title: t('syncHint'),
+                onClick: () => {
+                  if (typeof props.onSync === 'function') props.onSync();
+                },
+              },
+              props.sync !== null && props.sync !== undefined && props.sync.busy === true
+                ? t('syncBusy')
+                : t('syncLabel'),
+            ),
           ),
         },
         body,
@@ -1400,6 +1427,21 @@ window.__ModuleLoader__.load({
            on has stopped saying anything. */
         const updated = diff !== null && diff.first === false && (diff.added.length > 0 || diff.removed.length > 0);
         const [active, setActive] = React.useState(null);
+        /* Sync action: ask the Host to re-probe out-of-catalog models and
+           rewrite the auto-managed provider block, then re-read the catalog. */
+        const [sync, setSync] = React.useState({ busy: false, result: null });
+        const refresh = remote.refresh;
+        const runSync = React.useCallback(async () => {
+          setSync({ busy: true, result: null });
+          try {
+            const response = await fetch(SYNC_ROUTE, { method: 'POST', headers: { accept: 'application/json' } });
+            const result = await response.json();
+            setSync({ busy: false, result: result });
+            if (result !== null && typeof result === 'object' && result.ok === true) refresh();
+          } catch (error) {
+            setSync({ busy: false, result: { ok: false, message: String((error && error.message) || error) } });
+          }
+        }, [refresh]);
 
         return h(
           CellShell,
@@ -1425,6 +1467,8 @@ window.__ModuleLoader__.load({
                 diff: diff,
                 busy: remote.busy,
                 onRefresh: remote.refresh,
+                onSync: runSync,
+                sync: sync,
                 active: active,
                 setActive: setActive,
               }),
