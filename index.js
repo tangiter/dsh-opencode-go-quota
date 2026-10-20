@@ -40,7 +40,7 @@ const MODELS_PATH = `${ROUTE_PREFIX}/models`;
 const VERSION_PATH = `${ROUTE_PREFIX}/version`;
 const SYNC_PATH = `${ROUTE_PREFIX}/models/sync`;
 /** Attribution header, so upstream can tell this client from a bare SDK. */
-const USER_AGENT = 'dsh-opencode-go-quota/1.4.0';
+const USER_AGENT = 'dsh-opencode-go-quota/1.5.0';
 
 /** The three metered windows, in the order the popover lists them. */
 const WINDOW_IDS = ['rolling', 'weekly', 'monthly'];
@@ -314,7 +314,17 @@ export function apply(ctx, config) {
   /** One cached answer per key, carrying the in-flight read that produces it. */
   const cache = new Map();
 
-  const source = () => ({ baseUrl: baseUrl, apiKeyEnv: apiKeyEnv });
+  /** This plugin's own version, read once so every payload can report it. */
+  const pluginVersion = (() => {
+    try {
+      const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8'));
+      return typeof pkg.version === 'string' ? pkg.version : null;
+    } catch (error) {
+      return null;
+    }
+  })();
+
+  const source = () => ({ baseUrl: baseUrl, apiKeyEnv: apiKeyEnv, version: pluginVersion });
 
   /** Serve `producer()` through a TTL cache; `force` skips a fresh-enough entry. */
   async function cached(key, ttlMs, force, producer) {

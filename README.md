@@ -111,6 +111,10 @@ Host 半边仍然计算并返回 `docsBaseline`（内置的 2026-10-15 文档清
 
 配合 profile 的 `patchReload: live`，写完自动热重载，不需要重启 DSH。
 
+**用量弹层右下角的版本号**：`v1.5.0` 这样的浅色小字。它取的是 Host 半边从自己 `package.json`
+读到的版本（随每次响应放在 `source.version` 里返回），所以改版本号只需改 `package.json`，
+不用在界面上另找地方同步。
+
 **能力怎么判定**
 
 | 能力 | 判定方式 | 为什么这么做 |

@@ -300,6 +300,8 @@ const SYNC_ROUTE = '/opencode-go-quota/models/sync';
       '.dshogq-sync{border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:11px;line-height:1.5;padding:1px 6px;border-radius:4px;cursor:pointer;}',
       '.dshogq-sync:hover:not(:disabled){background:var(--dsw-alias-fill-l2);}',
       '.dshogq-sync:disabled{opacity:.6;cursor:default;}',
+      '.dshogq-footrow{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;}',
+      '.dshogq-ver{font-size:10px;line-height:1.4;color:var(--dsw-alias-label-tertiary);letter-spacing:.02em;white-space:nowrap;}',
       '.dshogq-ids{display:flex;flex-wrap:wrap;gap:3px;margin-top:5px;}',
       '.dshogq-id{font-family:var(--ds-font-family-code);font-size:11px;padding:1px 5px;',
       'border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-module-platform);',
@@ -1395,7 +1397,14 @@ const SYNC_ROUTE = '/opencode-go-quota/models/sync';
                   width: QUOTA_WIDTH,
                   title: t('title'),
                   subtitle: ready ? fill(t('updatedAt'), { time: clockTime(state.payload.fetchedAt) }) : null,
-                  footer: t('footer'),
+                  footer: h(
+                    'span',
+                    { className: 'dshogq-footrow' },
+                    h('span', null, t('footer')),
+                    ready && typeof state.payload?.source?.version === 'string'
+                      ? h('span', { className: 'dshogq-ver' }, `v${state.payload.source.version}`)
+                      : null,
+                  ),
                 },
                 body,
               );
