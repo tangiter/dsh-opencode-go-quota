@@ -39,6 +39,8 @@ const USAGE_PATH = `${ROUTE_PREFIX}/usage`;
 const MODELS_PATH = `${ROUTE_PREFIX}/models`;
 const VERSION_PATH = `${ROUTE_PREFIX}/version`;
 const SYNC_PATH = `${ROUTE_PREFIX}/models/sync`;
+/** Third-party provider catalogs (Agnes / SenseNova), one row per configured provider. */
+const PROVIDERS_PATH = `${ROUTE_PREFIX}/providers`;
 /** Attribution header, so upstream can tell this client from a bare SDK. */
 const USER_AGENT = 'dsh-opencode-go-quota/1.5.0';
 
@@ -1170,9 +1172,162 @@ export function apply(ctx, config) {
     );
   }
 
+  // ───────────────────────────────────────────────────────────────────────
+  // 「第三方目录」：Agnes / SenseNova 的 /models 清单
+  //
+  // 与 Go 目录无关的第三条数据源。凭据仍走 ctx.credentials（默认 ref：
+  // AGNES_API_KEY / SENSENOVA_API_KEY），清单由 Host 缓存，?force=1 才重打上游。
+  // 单个提供方失败只影响它自己那一节，整体仍是 ok，页面照常渲染其余部分。
+  // ───────────────────────────────────────────────────────────────────────
+  const DEFAULT_WATCH = [
+    {
+      id: 'agnes',
+      label: 'Agnes',
+      baseUrl: 'https://apihub.agnes-ai.com/v1',
+      apiKeyEnv: 'AGNES_API_KEY',
+      docs: 'https://agnes-ai.com/zh-Hans/docs/overview',
+      consoleUrl: 'https://platform.agnes-ai.com',
+    },
+    {
+      id: 'sensenova',
+      label: 'SenseNova',
+      baseUrl: 'https://token.sensenova.cn/v1',
+      apiKeyEnv: 'SENSENOVA_API_KEY',
+      docs: 'https://platform.sensenova.cn/docs',
+      consoleUrl: 'https://platform.sensenova.cn',
+    },
+  ];
+
+  /**
+   * The configured provider list, normalized.
+   *
+   * Opt-in by design: no `watchProviders` means no third-party catalog at all, so
+   * an installation that never asked for it does not grow an empty fourth cell.
+   * `DEFAULT_WATCH` is only a per-id fallback for the fields an entry leaves out
+   * (label / docs / console link / credential ref).
+   */
+  function watchSpecs() {
+    const configured = Array.isArray(settings.watchProviders) ? settings.watchProviders : [];
+    return configured
+      .filter((spec) => spec !== null && typeof spec === 'object' && typeof spec.baseUrl === 'string')
+      .map((spec, index) => {
+        const id = String(spec.id ?? `provider-${index}`);
+        const fallback = DEFAULT_WATCH.find((entry) => entry.id === id) ?? {};
+        const pick = (value, fallbackValue) =>
+          typeof value === 'string' && value.length > 0 ? value : typeof fallbackValue === 'string' ? fallbackValue : undefined;
+        return {
+          id: id,
+          label: pick(spec.label, fallback.label) ?? id,
+          baseUrl: String(spec.baseUrl).replace(/\/+$/u, ''),
+          apiKeyEnv: pick(spec.apiKeyEnv, fallback.apiKeyEnv),
+          docs: pick(spec.docs, fallback.docs) ?? null,
+          consoleUrl: pick(spec.consoleUrl, fallback.consoleUrl) ?? null,
+        };
+      });
+  }
+
+  /** Resolve an arbitrary credential ref: the store first, then the process environment. */
+  async function resolveRef(env) {
+    if (typeof env !== 'string' || env.length === 0) return undefined;
+    const credentials = ctx.get('credentials');
+    if (credentials !== undefined && typeof credentials.resolve === 'function') {
+      try {
+        const resolved = await credentials.resolve(env);
+        if (resolved !== undefined && typeof resolved.value === 'string' && resolved.value.length > 0) {
+          return resolved.value;
+        }
+      } catch (error) {
+        /* fall through to the process environment */
+      }
+    }
+    const fromEnv = typeof process !== 'undefined' && process.env !== undefined ? process.env[env] : undefined;
+    return typeof fromEnv === 'string' && fromEnv.length > 0 ? fromEnv : undefined;
+  }
+
+  /** One provider's live catalog: GET <baseUrl>/models, normalized and sorted. */
+  async function readProviderCatalog(spec) {
+    const head = {
+      id: spec.id,
+      label: spec.label,
+      docs: spec.docs,
+      consoleUrl: spec.consoleUrl,
+      apiKeyEnv: spec.apiKeyEnv,
+      source: { apiKeyEnv: spec.apiKeyEnv },
+    };
+    const key = await resolveRef(spec.apiKeyEnv);
+    if (key === undefined) {
+      return Object.assign({}, head, { ok: false, code: 'no-credential', message: 'no credential is configured' });
+    }
+    let response;
+    try {
+      response = await fetch(`${spec.baseUrl}/models`, {
+        method: 'GET',
+        headers: { accept: 'application/json', authorization: `Bearer ${key}`, 'user-agent': USER_AGENT },
+        signal: timeoutSignal(timeoutMs),
+      });
+    } catch (error) {
+      const name = error !== null && typeof error === 'object' ? error.name : undefined;
+      if (name === 'TimeoutError' || name === 'AbortError') {
+        return Object.assign({}, head, { ok: false, code: 'timeout', message: `${timeoutMs} ms` });
+      }
+      return Object.assign({}, head, { ok: false, code: 'network', message: String((error && error.message) || error) });
+    }
+    if (response.status === 401 || response.status === 403) {
+      return Object.assign({}, head, { ok: false, code: 'unauthorized', message: `HTTP ${response.status}` });
+    }
+    if (response.status === 429) {
+      return Object.assign({}, head, { ok: false, code: 'rate-limited', message: 'HTTP 429' });
+    }
+    let body = null;
+    try {
+      body = await response.json();
+    } catch (error) {
+      return Object.assign({}, head, { ok: false, code: 'upstream', message: `HTTP ${response.status} without JSON` });
+    }
+    if (!response.ok) {
+      return Object.assign({}, head, { ok: false, code: 'upstream', message: `HTTP ${response.status}` });
+    }
+    const rows = body !== null && typeof body === 'object' && Array.isArray(body.data) ? body.data : [];
+    const models = rows
+      .filter((row) => row !== null && typeof row === 'object' && typeof row.id === 'string' && row.id.length > 0)
+      .map((row) => ({
+        id: row.id,
+        name: typeof row.name === 'string' && row.name.length > 0 ? row.name : row.id,
+        contextWindow: Number.isFinite(row.context_length)
+          ? row.context_length
+          : Number.isFinite(row.context_window)
+            ? row.context_window
+            : null,
+      }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    if (models.length === 0) {
+      return Object.assign({}, head, { ok: false, code: 'shape', message: 'no recognized rows' });
+    }
+    return Object.assign({}, head, { ok: true, models: models });
+  }
+
+  /** Every configured provider, each answering (or failing) on its own. */
+  async function readProviders() {
+    const specs = watchSpecs();
+    const providers = await Promise.all(
+      specs.map((spec) =>
+        readProviderCatalog(spec).catch((error) =>
+          Object.assign(
+            { id: spec.id, label: spec.label, docs: spec.docs, consoleUrl: spec.consoleUrl, source: { apiKeyEnv: spec.apiKeyEnv } },
+            { ok: false, code: 'internal', message: String((error && error.message) || error) },
+          ),
+        ),
+      ),
+    );
+    return { ok: true, source: source(), fetchedAt: new Date().toISOString(), providers: providers };
+  }
+
+  const watchRefreshMs = clampNumber(settings.watchRefreshMs, 60000, 86400000, 900000);
+
   registerRoute(USAGE_PATH, 'usage', (force) => cached('usage', refreshMs, force, readUsage));
   registerRoute(MODELS_PATH, 'models', (force) => cached('models', infoRefreshMs, force, readModels));
   registerRoute(VERSION_PATH, 'version', (force) => cached('version', infoRefreshMs, force, readVersion));
+  registerRoute(PROVIDERS_PATH, 'third-party provider catalogs', (force) => cached('providers', watchRefreshMs, force, readProviders));
   registerAction(SYNC_PATH, 'regenerate the auto-managed model routes', (req) =>
     syncModels(typeof req?.url === 'string' && req.url.indexOf('force=1') !== -1),
   );

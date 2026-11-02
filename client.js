@@ -40,6 +40,10 @@ window.__ModuleLoader__.load({
     const VERSION_ROUTE = '/opencode-go-quota/version';
 /** Host action: regenerate the auto-managed model routes (POST only). */
 const SYNC_ROUTE = '/opencode-go-quota/models/sync';
+/** Third-party provider catalogs (Agnes / SenseNova). */
+const PROVIDERS_ROUTE = '/opencode-go-quota/providers';
+/** Where the previous visit's per-provider id lists live. */
+const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
     /** The two links the catalog popover's footer offers, instead of the
         documentation being recited inline. */
     const CONSOLE_URL = 'https://opencode.ai/console';
@@ -123,6 +127,16 @@ const SYNC_ROUTE = '/opencode-go-quota/models/sync';
       verChannelBeyond: 'newer than latest',
       verChanges: 'What changed',
       verNoNotes: '(no notes published)',
+      providersTitle: 'Third-party catalogs',
+      providersHint: 'Agnes / SenseNova model lists',
+      providersEmpty: 'No provider answered yet.',
+      providersFirst: 'First read — this is now the snapshot ({n} models). Press refresh to compare.',
+      providerAdded: '{n} new',
+      providerFailed: 'failed',
+      providersFooter: 'agnes-ai.com · platform.sensenova.cn',
+      agnesDocs: 'Agnes docs',
+      sensenovaDocs: 'SenseNova docs',
+      usageHint: 'Usage and quota are console-only — neither provider exposes an API for them.',
     };
 
     /** Dictionaries registered into the Client locale service under `NS`. */
@@ -182,6 +196,16 @@ const SYNC_ROUTE = '/opencode-go-quota/models/sync';
         verChannelBeyond: '晚于 latest',
         verChanges: '更新内容',
         verNoNotes: '（该版本没有发布说明）',
+        providersTitle: '第三方目录',
+        providersHint: 'Agnes / SenseNova 模型清单',
+        providersEmpty: '还没有提供方返回数据。',
+        providersFirst: '首次读取，已记为快照（{n} 个）。点刷新可对比。',
+        providerAdded: '新增 {n}',
+        providerFailed: '读取失败',
+        providersFooter: 'agnes-ai.com · platform.sensenova.cn',
+        agnesDocs: 'Agnes 文档',
+        sensenovaDocs: 'SenseNova 文档',
+        usageHint: '用量与配额只能登录控制台查看（两家均未开放查询接口）。',
       },
       en: FALLBACK,
     };
@@ -1534,6 +1558,249 @@ const SYNC_ROUTE = '/opencode-go-quota/models/sync';
       };
     }
 
+    /** Two bars: the third-party catalogs' cell glyph. */
+    function ProvidersGlyph() {
+      return h(
+        'svg',
+        { className: 'dshogq-marksvg', width: 14, height: 14, viewBox: '0 0 14 14', 'aria-hidden': true },
+        h('rect', { x: 1.5, y: 4, width: 4.5, height: 7, rx: 1, fill: 'currentColor', opacity: 0.5 }),
+        h('rect', { x: 8, y: 2, width: 4.5, height: 9, rx: 1, fill: 'currentColor', opacity: 0.9 }),
+      );
+    }
+
+    /** The ids of one provider, marking the ones this visit added. */
+    function providerIds(models, addedSet) {
+      return h(
+        'div',
+        { className: 'dshogq-ids' },
+        models.map((model) =>
+          h(
+            'span',
+            {
+              className: 'dshogq-id',
+              key: model.id,
+              'data-tone': addedSet !== null && addedSet.has(model.id) ? 'new' : undefined,
+              title: Number.isFinite(model.contextWindow)
+                ? `${model.id} · ${Math.round(model.contextWindow / 1000)}k ctx`
+                : model.id,
+            },
+            model.id,
+          ),
+        ),
+      );
+    }
+
+    /**
+     * Diff each provider's live ids against the snapshot the previous visit left,
+     * then record this one. Keyed on payload identity, so one fetch is one diff.
+     */
+    function useProvidersDiff(providers) {
+      const [diff, setDiff] = React.useState(null);
+      const seen = React.useRef(null);
+      React.useEffect(() => {
+        if (!Array.isArray(providers) || providers.length === 0) return;
+        if (seen.current === providers) return;
+        seen.current = providers;
+
+        let previous = null;
+        try {
+          previous = JSON.parse(window.localStorage.getItem(PROVIDERS_SNAPSHOT_KEY) ?? 'null');
+        } catch (error) {
+          previous = null;
+        }
+        if (previous === null || typeof previous !== 'object') previous = null;
+
+        const next = {};
+        const addedBy = {};
+        const removedBy = {};
+        const firstBy = {};
+        for (const provider of providers) {
+          if (provider === null || typeof provider !== 'object' || provider.ok !== true || !Array.isArray(provider.models)) continue;
+          const ids = provider.models.map((model) => model.id);
+          next[provider.id] = ids;
+          const before = previous !== null && Array.isArray(previous[provider.id]) ? previous[provider.id] : null;
+          if (before === null) {
+            firstBy[provider.id] = true;
+            addedBy[provider.id] = [];
+            removedBy[provider.id] = [];
+            continue;
+          }
+          const beforeSet = new Set(before);
+          const nowSet = new Set(ids);
+          addedBy[provider.id] = ids.filter((id) => !beforeSet.has(id));
+          removedBy[provider.id] = before.filter((id) => !nowSet.has(id));
+        }
+        const flattenBag = (bag) => Object.keys(bag).reduce((acc, key) => acc.concat(bag[key]), []);
+        setDiff({
+          first: previous === null,
+          addedBy: addedBy,
+          removedBy: removedBy,
+          firstBy: firstBy,
+          added: flattenBag(addedBy),
+          removed: flattenBag(removedBy),
+        });
+        try {
+          window.localStorage.setItem(PROVIDERS_SNAPSHOT_KEY, JSON.stringify(next));
+        } catch (error) {
+          /* private mode or quota: the diff degrades to "first look" */
+        }
+      }, [providers]);
+      return diff;
+    }
+
+    /** One provider section: title, count, new-chip, then its ids or its error. */
+    function providerSection(provider, diff, t) {
+      const ok = provider !== null && typeof provider === 'object' && provider.ok === true && Array.isArray(provider.models);
+      const models = ok ? provider.models : [];
+      const addedList =
+        diff !== null && diff.addedBy !== undefined && Array.isArray(diff.addedBy[provider.id]) ? diff.addedBy[provider.id] : [];
+      const first = diff !== null && diff.firstBy !== undefined && diff.firstBy[provider.id] === true;
+
+      const head = h(
+        'div',
+        { className: 'dshogq-secttitle' },
+        h('span', null, String(provider === null || provider === undefined ? '' : provider.label ?? provider.id ?? '')),
+        ok ? h('span', { className: 'dshogq-count' }, String(models.length)) : null,
+        ok && addedList.length > 0
+          ? h('span', { className: 'dshogq-chip', 'data-tone': 'ok' }, fill(t('providerAdded'), { n: addedList.length }))
+          : null,
+        ok ? null : h('span', { className: 'dshogq-chip', 'data-tone': 'warn' }, t('providerFailed')),
+        typeof provider.consoleUrl === 'string' && provider.consoleUrl.length > 0
+          ? h(
+              'a',
+              { className: 'dshogq-link', style: { marginLeft: 'auto' }, href: provider.consoleUrl, target: '_blank', rel: 'noreferrer' },
+              t('consoleLink'),
+            )
+          : null,
+      );
+
+      let content = null;
+      if (!ok) {
+        content = h('div', { className: 'dshogq-msg' }, messageFor(provider, t));
+      } else if (first) {
+        content = [
+          h('div', { className: 'dshogq-note', key: 'note' }, fill(t('providersFirst'), { n: models.length })),
+          providerIds(models, null),
+        ];
+      } else {
+        content = providerIds(models, new Set(addedList));
+      }
+
+      return h('div', { className: 'dshogq-sect', key: provider === null || provider === undefined ? 'provider' : provider.id }, head, content);
+    }
+
+    /** The third-party catalog popover: one section per provider. */
+    function ProvidersPopover(props) {
+      const t = props.t;
+      const state = props.state;
+      const payload = state.phase === 'ready' ? state.payload : null;
+      const providers = payload !== null && Array.isArray(payload.providers) ? payload.providers : [];
+
+      let body;
+      if (state.phase === 'loading') {
+        body = h('div', { className: 'dshogq-note' }, t('loading'));
+      } else if (state.phase === 'error' || payload === null) {
+        body = h('div', { className: 'dshogq-msg' }, failureLine(state, t));
+      } else if (providers.length === 0) {
+        body = h('div', { className: 'dshogq-note' }, t('providersEmpty'));
+      } else {
+        body = h(
+          'div',
+          { className: 'dshogq-scroll' },
+          providers.map((provider) => providerSection(provider, props.diff, t)),
+        );
+      }
+
+      return h(
+        PopoverBox,
+        {
+          position: props.position,
+          width: 380,
+          title: t('providersTitle'),
+          subtitle: payload !== null ? fill(t('updatedAt'), { time: clockTime(payload.fetchedAt) }) : null,
+          busy: props.busy,
+          refreshLabel: t('refresh'),
+          onRefresh: props.onRefresh,
+          footer: h(
+            'div',
+            { style: { display: 'flex', flexDirection: 'column', gap: '3px', width: '100%' } },
+            h(
+              'span',
+              { className: 'dshogq-footrow' },
+              h('span', null, t('providersFooter')),
+              h(
+                'span',
+                { className: 'dshogq-links' },
+                h(
+                  'a',
+                  { className: 'dshogq-link', href: 'https://agnes-ai.com/zh-Hans/docs/overview', target: '_blank', rel: 'noreferrer' },
+                  t('agnesDocs'),
+                ),
+                h('span', { className: 'dshogq-linksep' }, '·'),
+                h(
+                  'a',
+                  { className: 'dshogq-link', href: 'https://platform.sensenova.cn/docs', target: '_blank', rel: 'noreferrer' },
+                  t('sensenovaDocs'),
+                ),
+              ),
+            ),
+            h('span', { className: 'dshogq-logtext' }, t('usageHint')),
+          ),
+        },
+        body,
+      );
+    }
+
+    /** Build the third-party catalog cell: Agnes + SenseNova model counts. */
+    function makeWatchCell() {
+      return function OpenCodeGoProviders(props) {
+        const wide = !!(props && props.wide);
+        const locales = props && typeof props.t === 'function' ? props.t : null;
+        const t = (key, params) => fill(locales === null ? (FALLBACK[key] ?? key) : locales(key), params);
+
+        const remote = useRemote(PROVIDERS_ROUTE, INFO_TTL_MS);
+        const payload = remote.state.phase === 'ready' ? remote.state.payload : null;
+        const providers = payload !== null && Array.isArray(payload.providers) ? payload.providers : [];
+        const diff = useProvidersDiff(providers);
+
+        /* Opt-in: while unread, and whenever the Host reports no configured
+           providers, this cell is not wanted at all — draw nothing. */
+        if (remote.state.phase === 'loading') return null;
+        if (payload !== null && providers.length === 0) return null;
+
+        let total = 0;
+        for (const provider of providers) {
+          if (provider !== null && typeof provider === 'object' && provider.ok === true && Array.isArray(provider.models)) {
+            total += provider.models.length;
+          }
+        }
+        const updated = diff !== null && diff.first === false && diff.added.length + diff.removed.length > 0;
+
+        return h(
+          CellShell,
+          {
+            wide: wide,
+            mode: 'hover',
+            width: 380,
+            title: t('providersTitle'),
+            hint: t('providersHint'),
+            glyph: h(ProvidersGlyph, null),
+            label: wide && total > 0 ? String(total) : null,
+            badge: updated,
+            renderPopover: (position) =>
+              h(ProvidersPopover, {
+                position: position,
+                t: t,
+                state: remote.state,
+                diff: diff,
+                busy: remote.busy,
+                onRefresh: remote.refresh,
+              }),
+          },
+        );
+      };
+    }
+
     return {
       inject: ['slots', 'locale'],
       apply(ctx) {
@@ -1611,6 +1878,7 @@ const SYNC_ROUTE = '/opencode-go-quota/models/sync';
         register('opencode-go-quota', 40, 'title', makeQuotaCell(ctx));
         register('opencode-go-models', 41, 'modelsTitle', withLocale(makeModelsCell()));
         register('opencode-go-version', 42, 'versionTitle', withLocale(makeVersionCell()));
+        register('opencode-go-providers', 43, 'providersTitle', withLocale(makeWatchCell()));
       },
     };
   },

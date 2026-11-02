@@ -136,6 +136,52 @@ curl -X POST http://127.0.0.1:3080/opencode-go-quota/models/sync?force=1
 
 ---
 
+### 第三方目录：Agnes / SenseNova（v1.6.0，可选）
+
+第四格在侧边栏底部（`Ver` 右边），把任意 **OpenAI 兼容网关**的模型清单也纳入监控。
+
+**默认不启用**：`cordis.patch.yml` 里不写 `watchProviders` 就不会出现这一格（不影响前三格）。
+启用只需在插件行的 `config` 里加：
+
+```yaml
+        watchRefreshMs: 900000        # Host 侧清单缓存，默认 15 分钟
+        watchProviders:
+          - id: agnes
+            label: Agnes
+            baseUrl: https://apihub.agnes-ai.com/v1
+            apiKeyEnv: AGNES_API_KEY  # 走 ctx.credentials 解析，不写明文
+            docs: https://agnes-ai.com/zh-Hans/docs/overview
+            consoleUrl: https://platform.agnes-ai.com
+          - id: sensenova
+            label: SenseNova
+            baseUrl: https://token.sensenova.cn/v1
+            apiKeyEnv: SENSENOVA_API_KEY
+            docs: https://platform.sensenova.cn/docs
+            consoleUrl: https://platform.sensenova.cn
+```
+
+凭据仍按「配置 API Key」那节的办法写进 `$DSH_HOME/.credentials.yaml` 的 `refs:`，或设成同名环境变量。
+
+**它显示什么**：每家的模型数、全部模型 id、以及相对浏览器上次快照的**新增/下架**；格子本身在宽栏时
+显示两家模型总数，有新变动时带绿点。刷新节奏与 `模型`／`Ver` 两格一致（页面加载、每天 08:00、手动刷新）。
+
+**它刻意不显示用量**：实测 Agnes 与 SenseNova 都**没有**面向 API key 的用量/配额接口——
+
+| 探测 | 结果 |
+| --- | --- |
+| Agnes `/v1/dashboard/billing/usage` | 200，但恒为 `total_usage: 0`（占位实现） |
+| Agnes `/v1/dashboard/billing/subscription` | 200，占位额度（`hard_limit_usd: 100000000`） |
+| Agnes LiteLLM 管理端点（`/key/info`、`/spend/logs`…） | 403（网关只放行 `/v1/*`） |
+| Agnes 国际站 `api.agnes-ai.com/api/v1/*` | 401 `Login expired`（需控制台登录态） |
+| 正常对话响应头 | 无额度/限流字段 |
+| SenseNova `/v1/{usage,quota,balance,credits,…}` | 全部 404 |
+
+所以每节右上角给的是**控制台链接**，弹层底部明确写着「用量与配额只能登录控制台查看」。
+另外 Agnes 的 API 网关只暴露 `/v1/*` —— 同一账号的中文站与国际站共用 `apihub.agnes-ai.com`，
+key 在两边通用。
+
+---
+
 ## 安装
 
 两条路，按机器情况选一条。

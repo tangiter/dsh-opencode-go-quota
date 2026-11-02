@@ -1,8 +1,9 @@
-# OpenCode Go sidebar foot: meters, model catalog, DSH version.
+# OpenCode Go sidebar foot: meters, model catalog, DSH version,
+# and — opt-in — third-party provider catalogs (Agnes / SenseNova).
 #
-# The Host half owns the credential and every upstream call; the Client half
-# only reads computed answers from three same-origin routes, so the API key
-# never reaches the browser.
+# The Host half owns every credential and upstream call; the Client half only
+# reads computed answers from same-origin routes, so no API key ever reaches the
+# browser.
 - insert:
     - id: opencode-go-quota
       name: '@local/opencode-go-quota'
@@ -22,3 +23,27 @@
         registryUrl: https://registry.npmjs.org
         # Where the bilingual release notes are read from.
         releasesRepo: deepseek-ai/deepseek-harness
+        # ── Third-party catalogs (opt-in, v1.6.0) ──────────────────────────
+        # Leave `watchProviders` out and the fourth cell does not exist at all.
+        # Each entry is any OpenAI-compatible gateway: the Host reads
+        # `<baseUrl>/models` with the credential named by `apiKeyEnv` (resolved
+        # through ctx.credentials, hence never stored here) and reports new or
+        # removed ids against the browser's previous snapshot.
+        #
+        # Neither provider exposes a usage/quota endpoint to an API key — the
+        # popover links to their consoles instead. That is why these entries
+        # carry `consoleUrl` and `docs` but no billing route.
+        # watchRefreshMs: 900000
+        # watchProviders:
+        #   - id: agnes
+        #     label: Agnes
+        #     baseUrl: https://apihub.agnes-ai.com/v1
+        #     apiKeyEnv: AGNES_API_KEY
+        #     docs: https://agnes-ai.com/zh-Hans/docs/overview
+        #     consoleUrl: https://platform.agnes-ai.com
+        #   - id: sensenova
+        #     label: SenseNova
+        #     baseUrl: https://token.sensenova.cn/v1
+        #     apiKeyEnv: SENSENOVA_API_KEY
+        #     docs: https://platform.sensenova.cn/docs
+        #     consoleUrl: https://platform.sensenova.cn
