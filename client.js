@@ -50,6 +50,13 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
     const DOCS_URL = 'https://opencode.ai/zh/go';
     /** How often the page re-reads the meters; the Host caches behind it. */
     const POLL_MS = 60000;
+    /**
+     * A same-origin read that has not answered in this long is reported as an
+     * error. The Host caches every route and answers in milliseconds; anything
+     * slower than this is a stalled route, and without a deadline the cell would
+     * sit on "reading" until the page was reloaded.
+     */
+    const REMOTE_TIMEOUT_MS = 30000;
     /** Countdown refresh cadence. */
     const TICK_MS = 30000;
     /**
@@ -972,6 +979,14 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         let alive = true;
         const controller = new AbortController();
         const url = nonce === 0 ? path : `${path}${path.indexOf('?') === -1 ? '?' : '&'}force=1`;
+        /* A Host route that never answers must surface as an error rather than
+           sit on "loading" forever: the abort here is a deadline, not unmount,
+           so its AbortError is reported instead of swallowed. */
+        let timedOut = false;
+        const deadline = window.setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, REMOTE_TIMEOUT_MS);
         (async () => {
           try {
             const response = await fetch(url, { headers: { accept: 'application/json' }, signal: controller.signal });
@@ -985,12 +1000,20 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
             RESOURCE_CACHE.set(path, { at: at, state: next });
             if (alive) setEntry({ state: next, at: at });
           } catch (error) {
-            if (!alive || (error !== null && typeof error === 'object' && error.name === 'AbortError')) return;
-            setEntry({ state: { phase: 'error', payload: null, message: String((error && error.message) || error) }, at: 0 });
+            if (!alive) return;
+            const aborted = error !== null && typeof error === 'object' && error.name === 'AbortError';
+            if (aborted && !timedOut) return;
+            const message = timedOut
+              ? `${Math.round(REMOTE_TIMEOUT_MS / 1000)}s without an answer`
+              : String((error && error.message) || error);
+            setEntry({ state: { phase: 'error', payload: null, message: message }, at: 0 });
+          } finally {
+            window.clearTimeout(deadline);
           }
         })();
         return () => {
           alive = false;
+          window.clearTimeout(deadline);
           controller.abort();
         };
       }, [path, ttlMs, nonce]);

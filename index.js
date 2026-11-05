@@ -328,12 +328,26 @@ export function apply(ctx, config) {
 
   const source = () => ({ baseUrl: baseUrl, apiKeyEnv: apiKeyEnv, version: pluginVersion });
 
-  /** Serve `producer()` through a TTL cache; `force` skips a fresh-enough entry. */
+  /**
+   * Serve `producer()` through a TTL cache; `force` skips a fresh-enough entry.
+   *
+   * A read that never settles must not poison the key. Before this, one stalled
+   * upstream call left `hit.inflight` pending forever, so every later request —
+   * including `?force=1` from the refresh button — awaited that same dead
+   * promise and the popover sat on "reading" until the Host restarted. An
+   * inflight older than the read budget is now abandoned instead, and `force`
+   * always starts a fresh read.
+   */
+  const INFLIGHT_BUDGET_MS = Math.max(timeoutMs * 4, 60000);
+
   async function cached(key, ttlMs, force, producer) {
     const hit = cache.get(key);
     const now = Date.now();
     if (force !== true && hit !== undefined && hit.payload !== null && now - hit.at < ttlMs) return hit.payload;
-    if (hit !== undefined && hit.inflight !== undefined) return hit.inflight;
+    const inflightAge = hit !== undefined && hit.inflightAt !== undefined ? now - hit.inflightAt : Infinity;
+    if (hit !== undefined && hit.inflight !== undefined && force !== true && inflightAge < INFLIGHT_BUDGET_MS) {
+      return hit.inflight;
+    }
     const inflight = (async () => {
       try {
         const payload = await producer();
@@ -341,11 +355,16 @@ export function apply(ctx, config) {
         return payload;
       } catch (error) {
         const entry = cache.get(key);
-        if (entry !== undefined) entry.inflight = undefined;
+        if (entry !== undefined && entry.inflight === inflight) entry.inflight = undefined;
         throw error;
       }
     })();
-    cache.set(key, { at: hit === undefined ? 0 : hit.at, payload: hit === undefined ? null : hit.payload, inflight: inflight });
+    cache.set(key, {
+      at: hit === undefined ? 0 : hit.at,
+      payload: hit === undefined ? null : hit.payload,
+      inflight: inflight,
+      inflightAt: now,
+    });
     return inflight;
   }
 
