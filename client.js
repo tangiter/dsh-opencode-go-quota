@@ -48,8 +48,24 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         documentation being recited inline. */
     const CONSOLE_URL = 'https://opencode.ai/console';
     const DOCS_URL = 'https://opencode.ai/zh/go';
-    /** How often the page re-reads the meters; the Host caches behind it. */
+    /** Default cadence for the meters; the clock cell lets the reader change it. */
     const POLL_MS = 60000;
+    /**
+     * The intervals the clock cell offers, in display order. `0` disables
+     * automatic polling entirely: the usage popover then reads only when its
+     * own refresh button is pressed.
+     */
+    const POLL_OPTIONS = [
+      { ms: 30000, key: 'poll30s' },
+      { ms: 60000, key: 'poll1m' },
+      { ms: 120000, key: 'poll2m' },
+      { ms: 300000, key: 'poll5m' },
+      { ms: 600000, key: 'poll10m' },
+      { ms: 1800000, key: 'poll30m' },
+      { ms: 0, key: 'pollManual' },
+    ];
+    /** Where the reader's choice lives; one value per browser. */
+    const POLL_STORAGE_KEY = 'opencode-go-quota:pollMs:v1';
     /**
      * A same-origin read that has not answered in this long is reported as an
      * error. The Host caches every route and answers in milliseconds; anything
@@ -150,6 +166,16 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       agnesDocs: 'Agnes docs',
       sensenovaDocs: 'SenseNova docs',
       usageHint: 'Usage and quota are console-only — neither provider exposes an API for them.',
+      intervalTitle: 'Refresh interval',
+      intervalHint: 'How often the meters read',
+      intervalFooter: 'Per browser. Nothing is requested while the page is hidden.',
+      poll30s: '30 seconds',
+      poll1m: '1 minute',
+      poll2m: '2 minutes',
+      poll5m: '5 minutes',
+      poll10m: '10 minutes',
+      poll30m: '30 minutes',
+      pollManual: 'Manual only',
     };
 
     /** Dictionaries registered into the Client locale service under `NS`. */
@@ -219,6 +245,16 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         agnesDocs: 'Agnes 文档',
         sensenovaDocs: 'SenseNova 文档',
         usageHint: '用量与配额只能登录控制台查看（两家均未开放查询接口）。',
+        intervalTitle: '刷新间隔',
+        intervalHint: '用量格多久读一次',
+        intervalFooter: '仅在此浏览器生效；页面不可见时不发请求。',
+        poll30s: '30 秒',
+        poll1m: '1 分钟',
+        poll2m: '2 分钟',
+        poll5m: '5 分钟',
+        poll10m: '10 分钟',
+        poll30m: '30 分钟',
+        pollManual: '仅手动',
       },
       en: FALLBACK,
     };
@@ -884,18 +920,64 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
     }
 
     /** Poll the meter route while the page is visible, plus a countdown heartbeat. */
-    function useQuota() {
+    /** The interval this browser chose, or `null` when it never chose one. */
+    function readStoredPollMs() {
+      try {
+        const raw = window.localStorage.getItem(POLL_STORAGE_KEY);
+        if (raw === null) return null;
+        const value = Number(raw);
+        return Number.isFinite(value) && value >= 0 ? value : null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    /** Module-level so the clock cell and the meters read the same value. */
+    let storedPollMs = readStoredPollMs();
+    const pollListeners = new Set();
+
+    /** Record a new interval, persist it, and tell every mounted cell. */
+    function setPollMs(value) {
+      storedPollMs = value;
+      try {
+        window.localStorage.setItem(POLL_STORAGE_KEY, String(value));
+      } catch (error) {
+        /* private mode: the choice lasts for this page only */
+      }
+      for (const listener of pollListeners) listener(value);
+    }
+
+    /** The effective interval: the reader's choice, else the built-in default. */
+    function usePollMs() {
+      const [value, setValue] = React.useState(storedPollMs === null ? POLL_MS : storedPollMs);
+      React.useEffect(() => {
+        pollListeners.add(setValue);
+        return () => {
+          pollListeners.delete(setValue);
+        };
+      }, []);
+      return value;
+    }
+
+    /**
+     * Go plan meters, re-read at the chosen interval (never while the tab is
+     * hidden). `intervalMs === 0` means manual only: nothing is polled until
+     * `refresh()` runs.
+     */
+    function useQuota(intervalMs) {
       const [state, setState] = React.useState({ phase: 'loading', payload: null, message: '' });
+      const [nonce, setNonce] = React.useState(0);
       const [, setTick] = React.useState(0);
 
       React.useEffect(() => {
         let alive = true;
         let controller = null;
-        const load = async () => {
+        const load = async (force) => {
           if (controller !== null) controller.abort();
           controller = new AbortController();
+          const url = force === true ? `${USAGE_ROUTE}${USAGE_ROUTE.indexOf('?') === -1 ? '?' : '&'}force=1` : USAGE_ROUTE;
           try {
-            const response = await fetch(USAGE_ROUTE, { headers: { accept: 'application/json' }, signal: controller.signal });
+            const response = await fetch(url, { headers: { accept: 'application/json' }, signal: controller.signal });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const payload = await response.json();
             if (!alive) return;
@@ -910,28 +992,33 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
           }
         };
         const onVisibility = () => {
-          if (!document.hidden) load();
+          if (!document.hidden) load(false);
         };
 
-        load();
-        const poll = window.setInterval(() => {
-          if (!document.hidden) load();
-        }, POLL_MS);
+        /* `nonce > 0` means the reader pressed refresh, which bypasses the
+           Host's cache; the mount itself reads normally. */
+        load(nonce > 0);
+        const poll =
+          intervalMs > 0
+            ? window.setInterval(() => {
+                if (!document.hidden) load(false);
+              }, intervalMs)
+            : null;
         document.addEventListener('visibilitychange', onVisibility);
         return () => {
           alive = false;
-          window.clearInterval(poll);
+          if (poll !== null) window.clearInterval(poll);
           document.removeEventListener('visibilitychange', onVisibility);
           if (controller !== null) controller.abort();
         };
-      }, []);
+      }, [intervalMs, nonce]);
 
       React.useEffect(() => {
         const timer = window.setInterval(() => setTick((value) => value + 1), TICK_MS);
         return () => window.clearInterval(timer);
       }, []);
 
-      return state;
+      return { state: state, refresh: React.useCallback(() => setNonce((value) => value + 1), []) };
     }
 
     /** The local 08:00 that follows an instant — the one auto-refresh a day. */
@@ -1407,7 +1494,9 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         const locales = props && typeof props.t === 'function' ? props.t : null;
         const t = (key, params) => fill(locales === null ? (FALLBACK[key] ?? key) : locales(key), params);
 
-        const state = useQuota();
+        const intervalMs = usePollMs();
+        const quota = useQuota(intervalMs);
+        const state = quota.state;
         const byId = windowsById(state);
         const known = WINDOW_KEYS.filter((key) => byId[key.id] !== undefined);
         const ready = state.phase === 'ready' && known.length > 0;
@@ -1462,6 +1551,9 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
                   width: QUOTA_WIDTH,
                   title: t('title'),
                   subtitle: ready ? fill(t('updatedAt'), { time: clockTime(state.payload.fetchedAt) }) : null,
+                  busy: state.phase === 'loading',
+                  refreshLabel: t('refresh'),
+                  onRefresh: quota.refresh,
                   footer: h(
                     'span',
                     { className: 'dshogq-footrow' },
@@ -1842,6 +1934,82 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       };
     }
 
+    /** A clock glyph for the cadence cell. */
+    function ClockGlyph() {
+      return h(
+        'svg',
+        { className: 'dshogq-marksvg', width: 14, height: 14, viewBox: '0 0 14 14', 'aria-hidden': true },
+        h('circle', { cx: 7, cy: 7, r: 5.4, fill: 'none', stroke: 'currentColor', strokeWidth: 1.4 }),
+        h('path', {
+          d: 'M7 4.2V7l2 1.4',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.4,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+        }),
+      );
+    }
+
+    /**
+     * Build the cadence cell: a clock beside the meters that opens the interval
+     * choices. The choice is per browser (localStorage) and applies to the
+     * meters cell immediately — no reload needed.
+     */
+    function makeIntervalCell() {
+      return function OpenCodeGoInterval(props) {
+        const wide = !!(props && props.wide);
+        const locales = props && typeof props.t === 'function' ? props.t : null;
+        const t = (key, params) => fill(locales === null ? (FALLBACK[key] ?? key) : locales(key), params);
+        const intervalMs = usePollMs();
+        const current = POLL_OPTIONS.find((option) => option.ms === intervalMs) ?? null;
+
+        return h(
+          CellShell,
+          {
+            wide: wide,
+            mode: 'hover',
+            width: 200,
+            title: t('intervalTitle'),
+            hint: t('intervalHint'),
+            glyph: h(ClockGlyph, null),
+            label: wide && current !== null ? t(current.key) : null,
+            badge: false,
+            renderPopover: (position) =>
+              h(
+                PopoverBox,
+                {
+                  position: position,
+                  width: 200,
+                  title: t('intervalTitle'),
+                  subtitle: t('intervalHint'),
+                  footer: h('span', { className: 'dshogq-logtext' }, t('intervalFooter')),
+                },
+                h(
+                  'div',
+                  { className: 'dshogq-rows' },
+                  POLL_OPTIONS.map((option) =>
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        key: option.key,
+                        className: 'dshogq-navrow',
+                        'data-on': option.ms === intervalMs ? 'true' : 'false',
+                        'aria-pressed': option.ms === intervalMs,
+                        onClick: () => setPollMs(option.ms),
+                      },
+                      h('span', { className: 'dshogq-caret', 'aria-hidden': true }, option.ms === intervalMs ? '✓' : ''),
+                      h('span', { className: 'dshogq-navlabel' }, t(option.key)),
+                    ),
+                  ),
+                ),
+              ),
+          },
+        );
+      };
+    }
+
     return {
       inject: ['slots', 'locale'],
       apply(ctx) {
@@ -1916,6 +2084,7 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
             ),
           );
 
+        register('opencode-go-interval', 39, 'intervalTitle', withLocale(makeIntervalCell()));
         register('opencode-go-quota', 40, 'title', makeQuotaCell(ctx));
         register('opencode-go-models', 41, 'modelsTitle', withLocale(makeModelsCell()));
         register('opencode-go-version', 42, 'versionTitle', withLocale(makeVersionCell()));
