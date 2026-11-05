@@ -66,6 +66,8 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
     ];
     /** Where the reader's choice lives; one value per browser. */
     const POLL_STORAGE_KEY = 'opencode-go-quota:pollMs:v1';
+    /** How long the "interval saved" confirmation stays before it fades out. */
+    const NOTICE_MS = 3000;
     /**
      * A same-origin read that has not answered in this long is reported as an
      * error. The Host caches every route and answers in milliseconds; anything
@@ -176,6 +178,8 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       poll10m: '10 minutes',
       poll30m: '30 minutes',
       pollManual: 'Manual only',
+      intervalSaved: 'Set to refresh every {value}',
+      intervalSavedManual: 'Set to refresh only when asked',
     };
 
     /** Dictionaries registered into the Client locale service under `NS`. */
@@ -255,6 +259,8 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         poll10m: '10 分钟',
         poll30m: '30 分钟',
         pollManual: '仅手动',
+        intervalSaved: '设置 {value}刷新用量成功',
+        intervalSavedManual: '已切换为仅手动刷新用量',
       },
       en: FALLBACK,
     };
@@ -298,6 +304,13 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       'color:var(--dsw-alias-label-tertiary);cursor:pointer;}',
       '.dshogq-clock:hover,.dshogq-clock[data-on="true"]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);}',
       '.dshogq-clock:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));}',
+      /* The "interval saved" confirmation under the popover head: it fades on
+         its own, so nothing has to be dismissed. */
+      '.dshogq-toast{margin:2px 8px 4px;padding:4px 8px;border-radius:var(--dsw-radius-sm);',
+      'background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-state-success-primary);',
+      'font-size:11px;line-height:16px;animation:dshogq-toast-fade 3s var(--ds-ease-in-out) forwards;}',
+      '@keyframes dshogq-toast-fade{0%{opacity:0;transform:translateY(-2px);}8%{opacity:1;transform:none;}',
+      '75%{opacity:1;}100%{opacity:0;}}',
       '.dshogq-badge{width:5px;height:5px;border-radius:50%;background:var(--dsw-alias-state-success-primary);flex:none;}',
       /* Popover chrome copies the host's menu: no border, one elevation token,
          4px padding, .5px hairlines, host scrollbar tokens, hidden overflow so
@@ -1507,6 +1520,13 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         const state = quota.state;
         /* The popover's body switches to the interval list from the clock in its footer. */
         const [showInterval, setShowInterval] = React.useState(false);
+        /* A choice leaves a confirmation over the meters; it clears itself. */
+        const [notice, setNotice] = React.useState(null);
+        React.useEffect(() => {
+          if (notice === null) return undefined;
+          const timer = window.setTimeout(() => setNotice(null), NOTICE_MS);
+          return () => window.clearTimeout(timer);
+        }, [notice]);
         const byId = windowsById(state);
         const known = WINDOW_KEYS.filter((key) => byId[key.id] !== undefined);
         const ready = state.phase === 'ready' && known.length > 0;
@@ -1559,7 +1579,12 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
                         className: 'dshogq-navrow',
                         'data-on': option.ms === intervalMs ? 'true' : 'false',
                         'aria-pressed': option.ms === intervalMs,
-                        onClick: () => setPollMs(option.ms),
+                        onClick: () => {
+                          setPollMs(option.ms);
+                          /* Back to the meters, with a confirmation that fades. */
+                          setShowInterval(false);
+                          setNotice(option);
+                        },
                       },
                       h('span', { className: 'dshogq-caret', 'aria-hidden': true }, option.ms === intervalMs ? '✓' : ''),
                       h('span', { className: 'dshogq-navlabel' }, t(option.key)),
@@ -1579,9 +1604,17 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
                   known.map((key) => windowRow(key, byId[key.id], t)),
                 );
               }
-              return h(
-                PopoverBox,
-                {
+              /* The confirmation rides above the meters and fades out on its own,
+                 so a choice is acknowledged without a second click. */
+              const toast =
+                notice === null || showInterval
+                  ? null
+                  : h(
+                      'div',
+                      { className: 'dshogq-toast' },
+                      fill(t(notice.ms === 0 ? 'intervalSavedManual' : 'intervalSaved'), { value: t(notice.key) }),
+                    );
+              return h(PopoverBox, {
                   position: position,
                   width: QUOTA_WIDTH,
                   title: showInterval ? t('intervalTitle') : t('title'),
@@ -1619,7 +1652,7 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
                     ),
                   ),
                 },
-                body,
+                h('div', null, toast, body),
               );
             },
           },
