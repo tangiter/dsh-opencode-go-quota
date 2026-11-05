@@ -163,6 +163,10 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       providersEmpty: 'No provider answered yet.',
       providersFirst: 'First read — this is now the snapshot ({n} models). Press refresh to compare.',
       providerAdded: '{n} new',
+      providerDocs: 'from docs',
+      providerDocsHint: 'Read from the published documentation index; the live catalog needs a key.',
+      providerSnapshot: 'snapshot',
+      providerSnapshotHint: 'A dated list taken from the official docs; it changes rarely and needs no key.',
       providerFailed: 'failed',
       providersFooter: 'agnes-ai.com · platform.sensenova.cn',
       agnesDocs: 'Agnes docs',
@@ -244,6 +248,10 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         providersEmpty: '还没有提供方返回数据。',
         providersFirst: '首次读取，已记为快照（{n} 个）。点刷新可对比。',
         providerAdded: '新增 {n}',
+        providerDocs: '来自文档',
+        providerDocsHint: '这份清单读自官方文档索引；实时接口需要 API Key。',
+        providerSnapshot: '快照',
+        providerSnapshotHint: '取自官方文档的带日期清单；模型很少变动，因此无需 API Key。',
         providerFailed: '读取失败',
         providersFooter: 'agnes-ai.com · platform.sensenova.cn',
         agnesDocs: 'Agnes 文档',
@@ -1883,10 +1891,37 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         { className: 'dshogq-secttitle' },
         h('span', null, String(provider === null || provider === undefined ? '' : provider.label ?? provider.id ?? '')),
         ok ? h('span', { className: 'dshogq-count' }, String(models.length)) : null,
+        ok || provider === null || provider === undefined
+          ? null
+          : h('span', { className: 'dshogq-chip', 'data-tone': 'warn' }, t('providerFailed')),
         ok && addedList.length > 0
           ? h('span', { className: 'dshogq-chip', 'data-tone': 'ok' }, fill(t('providerAdded'), { n: addedList.length }))
           : null,
-        ok ? null : h('span', { className: 'dshogq-chip', 'data-tone': 'warn' }, t('providerFailed')),
+        /* Neither list is live: one is read from the published documentation,
+           the other from a dated snapshot. Say which, because a documented model
+           can be announced before it serves. */
+        ok && provider.via === 'snapshot'
+          ? h(
+              'span',
+              { className: 'dshogq-chip', title: t('providerSnapshotHint') },
+              typeof provider.asOf === 'string' && provider.asOf.length > 0
+                ? `${t('providerSnapshot')} ${provider.asOf}`
+                : t('providerSnapshot'),
+            )
+          : null,
+        ok && provider.via === 'docs'
+          ? h(
+              'a',
+              {
+                className: 'dshogq-chip',
+                href: typeof provider.docsIndex === 'string' ? provider.docsIndex : provider.docs,
+                target: '_blank',
+                rel: 'noreferrer',
+                title: t('providerDocsHint'),
+              },
+              t('providerDocs'),
+            )
+          : null,
         typeof provider.consoleUrl === 'string' && provider.consoleUrl.length > 0
           ? h(
               'a',

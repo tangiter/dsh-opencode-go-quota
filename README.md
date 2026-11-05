@@ -165,7 +165,32 @@ curl -X POST http://127.0.0.1:3080/opencode-go-quota/models/sync?force=1
             consoleUrl: https://platform.sensenova.cn
 ```
 
-凭据仍按「配置 API Key」那节的办法写进 `$DSH_HOME/.credentials.yaml` 的 `refs:`，或设成同名环境变量。
+**不需要 API Key**。两家各有一条零凭据的取数路径，配置了 key 时仍然以实时接口为准：
+
+| 提供方 | 零凭据来源 | 说明 |
+| --- | --- | --- |
+| **Agnes** | `docsIndex: https://wiki.agnes-ai.com/llms.txt` | Mintlify 发布的文档索引，模型页即清单 |
+| **SenseNova** | `docsChunksPage: https://platform.sensenova.cn/docs` | 页面是 Next.js 外壳，但文档正文（含模型表格的原始 Markdown）编译在 `/_next/static/chunks/` 里。插件读页面 HTML → 找到含表格的 chunk → 解析。chunk 名带内容哈希、每次部署都变，所以是**发现**而非固定 URL |
+
+两者都不是实时 API，因此徽章写 `[来自文档]`，点开可跳到对应文档。
+
+**SenseNova 的抓取细节**：文档里那张表长这样（注意列宽填充空格）——
+
+```
+| Model Name               | Model ID                   | Description |
+| SenseNova 6.8 Flash      | `sensenova-6.8-flash`      | …           |
+```
+
+解析器按行切 `|`、取第三格的反引号内容作为 id，并只在 id 形如 `[A-Za-z0-9][A-Za-z0-9._-]*` 时接受。
+首次读取约 1.8 秒（扫描 17 个 chunk，实测第 7 个命中）；之后记住那个 chunk URL，直接单文件读取。
+部署换了哈希会取不到，此时自动重新扫描。
+
+**离线兜底**：`staticModels` / `staticAsOf` 仍保留一份带日期的快照。只有在扫描失败（比如站点改版）
+时才会用到，徽章会变成 `[快照 2026-11-05]`。它不再是主数据源。
+
+> 实用差异：Agnes 文档比实时接口多两个条目（`agnes-2.5-pro` 已被 `-alpha`/`-beta` 取代、
+> `agnes-3.0-pro` 标注 coming soon），实时接口则多一个 `agnes-2.5-pro-alpha`。文档是近似镜像，
+> 不是精确同步——徽章就是为此而设。
 
 **它显示什么**：每家的模型数、全部模型 id、以及相对浏览器上次快照的**新增/下架**；格子本身在宽栏时
 显示两家模型总数，有新变动时带绿点。刷新节奏与 `模型`／`Ver` 两格一致（页面加载、每天 08:00、手动刷新）。

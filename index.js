@@ -42,7 +42,7 @@ const SYNC_PATH = `${ROUTE_PREFIX}/models/sync`;
 /** Third-party provider catalogs (Agnes / SenseNova), one row per configured provider. */
 const PROVIDERS_PATH = `${ROUTE_PREFIX}/providers`;
 /** Attribution header, so upstream can tell this client from a bare SDK. */
-const USER_AGENT = 'dsh-opencode-go-quota/1.5.0';
+const USER_AGENT = 'dsh-opencode-go-quota/1.8.0';
 
 /** The three metered windows, in the order the popover lists them. */
 const WINDOW_IDS = ['rolling', 'weekly', 'monthly'];
@@ -1225,6 +1225,10 @@ export function apply(ctx, config) {
       baseUrl: 'https://apihub.agnes-ai.com/v1',
       apiKeyEnv: 'AGNES_API_KEY',
       docs: 'https://agnes-ai.com/zh-Hans/docs/overview',
+      /* Mintlify publishes a machine-readable index of every documentation
+         page here, and the model pages are the catalog. Used only when no
+         credential is configured, so a key still wins when one exists. */
+      docsIndex: 'https://wiki.agnes-ai.com/llms.txt',
       consoleUrl: 'https://platform.agnes-ai.com',
     },
     {
@@ -1233,6 +1237,28 @@ export function apply(ctx, config) {
       baseUrl: 'https://token.sensenova.cn/v1',
       apiKeyEnv: 'SENSENOVA_API_KEY',
       docs: 'https://platform.sensenova.cn/docs',
+      /* The docs site is a Next.js shell that only renders in a browser, and it
+         has no llms.txt / openapi.json (every probe answers 404). Its page
+         content — including the model table as raw Markdown — is compiled into a
+         content-hashed chunk under /_next/static/chunks/. So the plugin reads
+         the page HTML, finds the chunk holding the table, and parses it. The
+         chunk name changes on every deploy, hence discovery rather than a fixed
+         URL. No credential is involved at any point. */
+      docsChunksPage: 'https://platform.sensenova.cn/docs',
+      /* Offline fallback, used only when that scan fails: a dated copy of the
+         same table. Not the primary source any more. */
+      staticAsOf: '2026-11-05',
+      staticModels: [
+        { id: 'sensenova-6.8-flash', name: 'SenseNova 6.8 Flash' },
+        { id: 'sensenova-6.8-flash-lite', name: 'SenseNova 6.8 Flash Lite' },
+        { id: 'sensenova-u1.5-lite', name: 'SenseNova U1.5 Lite' },
+        { id: 'sensenova-u1.5-fast', name: 'SenseNova U1.5 Fast' },
+        { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash' },
+        { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+        { id: 'glm-5.3', name: 'GLM-5.3' },
+        { id: 'glm-5.2', name: 'GLM-5.2' },
+        { id: 'kimi-k3', name: 'Kimi K3' },
+      ],
       consoleUrl: 'https://platform.sensenova.cn',
     },
   ];
@@ -1254,12 +1280,23 @@ export function apply(ctx, config) {
         const fallback = DEFAULT_WATCH.find((entry) => entry.id === id) ?? {};
         const pick = (value, fallbackValue) =>
           typeof value === 'string' && value.length > 0 ? value : typeof fallbackValue === 'string' ? fallbackValue : undefined;
+        /* A static snapshot may come from either layer; a configured one is for
+           a gateway the shipped defaults do not describe. */
+        const snapshotOf = (value, fallbackValue) => {
+          if (Array.isArray(value) && value.length > 0) return value;
+          if (Array.isArray(fallbackValue) && fallbackValue.length > 0) return fallbackValue;
+          return null;
+        };
         return {
           id: id,
           label: pick(spec.label, fallback.label) ?? id,
           baseUrl: String(spec.baseUrl).replace(/\/+$/u, ''),
           apiKeyEnv: pick(spec.apiKeyEnv, fallback.apiKeyEnv),
           docs: pick(spec.docs, fallback.docs) ?? null,
+          docsIndex: pick(spec.docsIndex, fallback.docsIndex) ?? null,
+          docsChunksPage: pick(spec.docsChunksPage, fallback.docsChunksPage) ?? null,
+          staticModels: snapshotOf(spec.staticModels, fallback.staticModels),
+          staticAsOf: pick(spec.staticAsOf, fallback.staticAsOf) ?? null,
           consoleUrl: pick(spec.consoleUrl, fallback.consoleUrl) ?? null,
         };
       });
@@ -1283,6 +1320,187 @@ export function apply(ctx, config) {
     return typeof fromEnv === 'string' && fromEnv.length > 0 ? fromEnv : undefined;
   }
 
+  /**
+   * Turn a documentation slug into the id the API serves.
+   * `agnes-25-flash` → `agnes-2.5-flash`, `agnes-video-25` → `agnes-video-2.5`.
+   */
+  function slugToModelId(slug) {
+    return slug.replace(/-(\d)(\d)(?=-|$)/gu, '-$1.$2');
+  }
+
+  /**
+   * Model entries from a Mintlify `llms.txt` documentation index.
+   *
+   * Only pages whose slug starts with the provider id count: the same index also
+   * lists quickstarts, integration guides, pricing and legal pages, and none of
+   * those are models. Entries are deduplicated by derived id.
+   *
+   * @returns models in id order, possibly empty when the index carries none.
+   */
+  function parseDocsIndex(text, spec) {
+    const models = [];
+    const seen = new Set();
+    for (const line of String(text).split(/\r?\n/u)) {
+      const match = /^\s*-\s*\[([^\]]+)\]\((https?:\/\/[^\s)]+?\.md)\)\s*(?::\s*(.*))?$/u.exec(line);
+      if (match === null) continue;
+      const slug = match[2].split('/').pop().replace(/\.md$/u, '');
+      if (!slug.startsWith(`${spec.id}-`)) continue;
+      const id = slugToModelId(slug);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const note = typeof match[3] === 'string' ? match[3].trim() : '';
+      models.push({ id: id, name: match[1].trim(), contextWindow: null, note: note.length > 0 ? note : null });
+    }
+    return models.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+
+  /**
+   * The header of a model table in the published Markdown, cell padding and all:
+   * `| Model Name               | Model ID                   | Description |`.
+   */
+  const MODEL_TABLE_HEADER = /\|\s*Model\s*Name\s*\|\s*Model\s*ID\s*\|/iu;
+  /** Chunk references inside one docs page's HTML. */
+  const NEXT_CHUNK_HINT = /\/_next\/static\/chunks\/[^"'\s)]+?\.js/gu;
+  /** How many chunks a single scan may fetch, newest first in page order. */
+  const MAX_DOCS_CHUNKS = 40;
+  /** Which chunk last carried a provider's model table, so a later read skips the scan. */
+  const chunkCache = new Map();
+
+  /**
+   * Parse a Markdown model table out of a chunk's source text.
+   *
+   * Rows look like `| SenseNova 6.8 Flash | \`sensenova-6.8-flash\` | … |`, with
+   * padding spaces and escaped newlines because this is a JavaScript string.
+   * Only rows whose second cell is a backticked id count, so the separator line
+   * and any prose are skipped.
+   */
+  function parseModelTable(text) {
+    const header = MODEL_TABLE_HEADER.exec(text);
+    if (header === null) return [];
+    const region = text.slice(header.index, header.index + 12000);
+    const models = [];
+    const seen = new Set();
+    for (const rawLine of region.split(/\\n|\n/u)) {
+      const line = rawLine.trim();
+      if (!line.startsWith('|')) continue;
+      const cells = line.split('|').map((cell) => cell.trim());
+      if (cells.length < 4) continue;
+      const idMatch = /^`([^`]+)`$/u.exec(cells[2]);
+      if (idMatch === null) continue;
+      const id = idMatch[1].trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(id) || seen.has(id)) continue;
+      seen.add(id);
+      const name = cells[1].replace(/\s+/gu, ' ').trim();
+      models.push({ id: id, name: name.length > 0 ? name : id, contextWindow: null });
+    }
+    return models.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+
+  /** Fetch one chunk and return its model table, or [] when it carries none. */
+  async function readChunkTable(url) {
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'GET',
+        headers: { accept: 'text/javascript, application/javascript, */*;q=0.8', 'user-agent': USER_AGENT },
+        signal: timeoutSignal(timeoutMs),
+      });
+    } catch (error) {
+      return [];
+    }
+    if (!response.ok) return [];
+    let text;
+    try {
+      text = await response.text();
+    } catch (error) {
+      return [];
+    }
+    if (!MODEL_TABLE_HEADER.test(text)) return [];
+    return parseModelTable(text);
+  }
+
+  /**
+   * One provider's catalog read from its documentation site's compiled chunks.
+   *
+   * A Next.js page renders its Markdown into a content-hashed chunk, so there is
+   * no stable URL to fetch: the page HTML is read for chunk references, then the
+   * chunks are scanned in small batches until one carries the model table. The
+   * winning URL is remembered, so a repeat read fetches one file instead of all.
+   *
+   * @returns normalized models, or `null` when no chunk could be read.
+   */
+  async function readProviderChunks(spec, head) {
+    const known = chunkCache.get(spec.id);
+    if (typeof known === 'string') {
+      const models = await readChunkTable(known);
+      if (models.length > 0) return Object.assign({}, head, { ok: true, via: 'docs', models: models });
+      /* The chunk name changes on every deploy; drop the stale hint and rescan. */
+      chunkCache.delete(spec.id);
+    }
+
+    let html;
+    try {
+      const response = await fetch(spec.docsChunksPage, {
+        method: 'GET',
+        headers: { accept: 'text/html', 'user-agent': USER_AGENT },
+        signal: timeoutSignal(timeoutMs),
+      });
+      if (!response.ok) return null;
+      html = await response.text();
+    } catch (error) {
+      return null;
+    }
+
+    const urls = [];
+    for (const match of html.matchAll(NEXT_CHUNK_HINT)) {
+      const url = new URL(match[0], spec.docsChunksPage).href;
+      if (!urls.includes(url)) urls.push(url);
+    }
+    if (urls.length === 0) return null;
+
+    const queue = urls.slice(0, MAX_DOCS_CHUNKS);
+    for (let index = 0; index < queue.length; index += 6) {
+      const batch = queue.slice(index, index + 6);
+      const settled = await Promise.all(
+        batch.map((url) => readChunkTable(url).then((models) => ({ url, models })).catch(() => null)),
+      );
+      for (const item of settled) {
+        if (item === null || item.models.length === 0) continue;
+        chunkCache.set(spec.id, item.url);
+        return Object.assign({}, head, { ok: true, via: 'docs', models: item.models });
+      }
+    }
+    return null;
+  }
+
+  /**
+   * One provider's catalog read from its documentation index, used when no
+   * credential is configured. Returns `null` when the index is unusable so the
+   * caller can still try the endpoint anonymously.
+   */
+  async function readProviderDocs(spec, head) {
+    let response;
+    try {
+      response = await fetch(spec.docsIndex, {
+        method: 'GET',
+        headers: { accept: 'text/plain, text/markdown;q=0.9, */*;q=0.5', 'user-agent': USER_AGENT },
+        signal: timeoutSignal(timeoutMs),
+      });
+    } catch (error) {
+      return null;
+    }
+    if (!response.ok) return null;
+    let text;
+    try {
+      text = await response.text();
+    } catch (error) {
+      return null;
+    }
+    const models = parseDocsIndex(text, spec);
+    if (models.length === 0) return null;
+    return Object.assign({}, head, { ok: true, via: 'docs', docsIndex: spec.docsIndex, models: models });
+  }
+
   /** One provider's live catalog: GET <baseUrl>/models, normalized and sorted. */
   async function readProviderCatalog(spec) {
     const head = {
@@ -1294,14 +1512,46 @@ export function apply(ctx, config) {
       source: { apiKeyEnv: spec.apiKeyEnv },
     };
     const key = await resolveRef(spec.apiKeyEnv);
-    if (key === undefined) {
-      return Object.assign({}, head, { ok: false, code: 'no-credential', message: 'no credential is configured' });
+    /* No credential but a published documentation index: read the catalog from
+       the docs instead of failing. A key always wins when one exists. */
+    if (key === undefined && typeof spec.docsIndex === 'string' && spec.docsIndex.length > 0) {
+      const fromDocs = await readProviderDocs(spec, head);
+      if (fromDocs !== null) return fromDocs;
     }
+    /* No credential but a documentation site whose content is compiled into
+       chunks: scan for the model table, so the list is live rather than baked. */
+    if (key === undefined && typeof spec.docsChunksPage === 'string' && spec.docsChunksPage.length > 0) {
+      const fromChunks = await readProviderChunks(spec, head);
+      if (fromChunks !== null) return fromChunks;
+    }
+    /* No credential and no readable index: a dated static snapshot still answers
+       without any network call, which is what lets a shared installation show
+       this provider without asking every user for its key. */
+    if (key === undefined && Array.isArray(spec.staticModels) && spec.staticModels.length > 0) {
+      const models = spec.staticModels
+        .filter((model) => model !== null && typeof model === 'object' && typeof model.id === 'string')
+        .map((model) => ({
+          id: model.id,
+          name: typeof model.name === 'string' && model.name.length > 0 ? model.name : model.id,
+          contextWindow: null,
+        }))
+        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      if (models.length > 0) {
+        return Object.assign({}, head, { ok: true, via: 'snapshot', asOf: spec.staticAsOf, models: models });
+      }
+    }
+    /* A catalog can also be public — a gateway may serve `/v1/models` to anyone,
+       ignoring the Authorization header entirely. An absent credential
+       therefore only drops that header instead of giving up: a catalog that
+       really needs one answers 401 below and is reported as such, while a
+       public one still renders. Sending another provider's key would leak it. */
+    const headers = { accept: 'application/json', 'user-agent': USER_AGENT };
+    if (key !== undefined) headers.authorization = `Bearer ${key}`;
     let response;
     try {
       response = await fetch(`${spec.baseUrl}/models`, {
         method: 'GET',
-        headers: { accept: 'application/json', authorization: `Bearer ${key}`, 'user-agent': USER_AGENT },
+        headers: headers,
         signal: timeoutSignal(timeoutMs),
       });
     } catch (error) {
@@ -1312,6 +1562,15 @@ export function apply(ctx, config) {
       return Object.assign({}, head, { ok: false, code: 'network', message: String((error && error.message) || error) });
     }
     if (response.status === 401 || response.status === 403) {
+      /* With no credential configured, the truthful cause is the missing
+         credential, not a rejected one: say which ref to fill in. */
+      if (key === undefined) {
+        return Object.assign({}, head, {
+          ok: false,
+          code: 'no-credential',
+          message: spec.apiKeyEnv === undefined ? 'the catalog needs a credential' : `set ${spec.apiKeyEnv}`,
+        });
+      }
       return Object.assign({}, head, { ok: false, code: 'unauthorized', message: `HTTP ${response.status}` });
     }
     if (response.status === 429) {
