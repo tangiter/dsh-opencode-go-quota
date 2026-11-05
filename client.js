@@ -57,6 +57,12 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
      * sit on "reading" until the page was reloaded.
      */
     const REMOTE_TIMEOUT_MS = 30000;
+    /**
+     * How long an errored same-origin read waits before retrying itself. The
+     * upstream gateway hangs for seconds at a time; without this, one blip left
+     * the catalog and version cells red until the reader pressed refresh.
+     */
+    const ERROR_RETRY_MS = 45000;
     /** Countdown refresh cadence. */
     const TICK_MS = 30000;
     /**
@@ -1022,6 +1028,18 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         RESOURCE_CACHE.delete(path);
         setNonce((value) => value + 1);
       }, [path]);
+
+      /* An errored read retries itself once the upstream has had time to
+         recover; success never re-enters this path, so a healthy cell stays
+         put for the whole page session. */
+      React.useEffect(() => {
+        if (entry.state.phase !== 'error') return undefined;
+        const timer = window.setTimeout(() => {
+          RESOURCE_CACHE.delete(path);
+          setNonce((value) => value + 1);
+        }, ERROR_RETRY_MS);
+        return () => window.clearTimeout(timer);
+      }, [entry.state.phase, path]);
 
       return {
         state: entry.state,

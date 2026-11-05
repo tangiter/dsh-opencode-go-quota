@@ -385,8 +385,28 @@ export function apply(ctx, config) {
     return typeof fromEnv === 'string' && fromEnv.length > 0 ? fromEnv : undefined;
   }
 
-  /** One authenticated JSON read against the Go API. */
+  /**
+   * One authenticated JSON read against the Go API, retrying transient stalls.
+   *
+   * The gateway is reached over links that intermittently hang: a read that
+   * times out or fails at the socket layer is almost always fine a moment later,
+   * and a single-shot read turns that blip into a red popover. Only transport
+   * failures are retried — an auth or upstream status is reported as it is.
+   */
+  const READ_ATTEMPTS = 3;
+  const RETRY_BACKOFF_MS = 400;
+
   async function goJson(path, what) {
+    for (let attempt = 1; ; attempt += 1) {
+      const answer = await goJsonOnce(path, what);
+      if (answer.ok === true || attempt >= READ_ATTEMPTS) return answer;
+      if (answer.code !== 'network' && answer.code !== 'timeout') return answer;
+      await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS * attempt));
+    }
+  }
+
+  /** A single attempt; {@link goJson} owns the retry policy. */
+  async function goJsonOnce(path, what) {
     const key = await resolveApiKey();
     if (key === undefined) {
       return { ok: false, code: 'no-credential', message: `no credential is configured for ${apiKeyEnv}` };
@@ -1325,12 +1345,22 @@ export function apply(ctx, config) {
     return Object.assign({}, head, { ok: true, models: models });
   }
 
+  /** A catalog read retried across transport-only failures, like {@link goJson}. */
+  async function readProviderCatalogRetrying(spec) {
+    for (let attempt = 1; ; attempt += 1) {
+      const answer = await readProviderCatalog(spec);
+      if (answer.ok === true || attempt >= READ_ATTEMPTS) return answer;
+      if (answer.code !== 'network' && answer.code !== 'timeout') return answer;
+      await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS * attempt));
+    }
+  }
+
   /** Every configured provider, each answering (or failing) on its own. */
   async function readProviders() {
     const specs = watchSpecs();
     const providers = await Promise.all(
       specs.map((spec) =>
-        readProviderCatalog(spec).catch((error) =>
+        readProviderCatalogRetrying(spec).catch((error) =>
           Object.assign(
             { id: spec.id, label: spec.label, docs: spec.docs, consoleUrl: spec.consoleUrl, source: { apiKeyEnv: spec.apiKeyEnv } },
             { ok: false, code: 'internal', message: String((error && error.message) || error) },
