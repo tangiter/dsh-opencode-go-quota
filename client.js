@@ -290,6 +290,14 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       '.dshogq-refresh:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);}',
       '.dshogq-refresh:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));}',
       '.dshogq-refresh[data-busy="true"]{opacity:.4;cursor:default;}',
+      /* The cadence toggle sits in the meters popover's footer, left of the
+         version string: a quiet 18px clock that lights up while the interval
+         list is showing. */
+      '.dshogq-clock{display:inline-flex;align-items:center;justify-content:center;flex:none;width:18px;height:18px;',
+      'padding:0;border:none;outline:none;background:0 0;border-radius:var(--dsw-radius-xs);',
+      'color:var(--dsw-alias-label-tertiary);cursor:pointer;}',
+      '.dshogq-clock:hover,.dshogq-clock[data-on="true"]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);}',
+      '.dshogq-clock:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));}',
       '.dshogq-badge{width:5px;height:5px;border-radius:50%;background:var(--dsw-alias-state-success-primary);flex:none;}',
       /* Popover chrome copies the host's menu: no border, one elevation token,
          4px padding, .5px hairlines, host scrollbar tokens, hidden overflow so
@@ -1497,6 +1505,8 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         const intervalMs = usePollMs();
         const quota = useQuota(intervalMs);
         const state = quota.state;
+        /* The popover's body switches to the interval list from the clock in its footer. */
+        const [showInterval, setShowInterval] = React.useState(false);
         const byId = windowsById(state);
         const known = WINDOW_KEYS.filter((key) => byId[key.id] !== undefined);
         const ready = state.phase === 'ready' && known.length > 0;
@@ -1529,9 +1539,34 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
             glyph: miniBars(byId),
             label: wide && ready ? `${Math.round(highest.percent)}%` : null,
             labelLevel: highest.level,
+            /* Reopening the popover always starts at the meters, not at the
+               interval list the reader happened to leave open. */
+            onOpenChange: (isOpen) => {
+              if (!isOpen) setShowInterval(false);
+            },
             renderPopover: (position) => {
               let body;
-              if (state.phase === 'loading') {
+              if (showInterval) {
+                body = h(
+                  'div',
+                  { className: 'dshogq-rows' },
+                  POLL_OPTIONS.map((option) =>
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        key: option.key,
+                        className: 'dshogq-navrow',
+                        'data-on': option.ms === intervalMs ? 'true' : 'false',
+                        'aria-pressed': option.ms === intervalMs,
+                        onClick: () => setPollMs(option.ms),
+                      },
+                      h('span', { className: 'dshogq-caret', 'aria-hidden': true }, option.ms === intervalMs ? '✓' : ''),
+                      h('span', { className: 'dshogq-navlabel' }, t(option.key)),
+                    ),
+                  ),
+                );
+              } else if (state.phase === 'loading') {
                 body = h('div', { className: 'dshogq-note' }, t('loading'));
               } else if (state.phase === 'error') {
                 body = h('div', { className: 'dshogq-msg' }, failureLine(state, t));
@@ -1549,18 +1584,39 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
                 {
                   position: position,
                   width: QUOTA_WIDTH,
-                  title: t('title'),
-                  subtitle: ready ? fill(t('updatedAt'), { time: clockTime(state.payload.fetchedAt) }) : null,
+                  title: showInterval ? t('intervalTitle') : t('title'),
+                  subtitle: showInterval
+                    ? t('intervalHint')
+                    : ready
+                      ? fill(t('updatedAt'), { time: clockTime(state.payload.fetchedAt) })
+                      : null,
                   busy: state.phase === 'loading',
                   refreshLabel: t('refresh'),
                   onRefresh: quota.refresh,
                   footer: h(
                     'span',
                     { className: 'dshogq-footrow' },
-                    h('span', null, t('footer')),
-                    ready && typeof state.payload?.source?.version === 'string'
-                      ? h('span', { className: 'dshogq-ver' }, `v${state.payload.source.version}`)
-                      : null,
+                    h('span', null, showInterval ? t('intervalFooter') : t('footer')),
+                    h(
+                      'span',
+                      { className: 'dshogq-links' },
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'dshogq-clock',
+                          'data-on': showInterval ? 'true' : 'false',
+                          'aria-pressed': showInterval,
+                          title: t('intervalTitle'),
+                          'aria-label': t('intervalTitle'),
+                          onClick: () => setShowInterval((value) => !value),
+                        },
+                        h(ClockGlyph, null),
+                      ),
+                      ready && typeof state.payload?.source?.version === 'string'
+                        ? h('span', { className: 'dshogq-ver' }, `v${state.payload.source.version}`)
+                        : null,
+                    ),
                   ),
                 },
                 body,
@@ -1951,64 +2007,6 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       );
     }
 
-    /**
-     * Build the cadence cell: a clock beside the meters that opens the interval
-     * choices. The choice is per browser (localStorage) and applies to the
-     * meters cell immediately — no reload needed.
-     */
-    function makeIntervalCell() {
-      return function OpenCodeGoInterval(props) {
-        const wide = !!(props && props.wide);
-        const locales = props && typeof props.t === 'function' ? props.t : null;
-        const t = (key, params) => fill(locales === null ? (FALLBACK[key] ?? key) : locales(key), params);
-        const intervalMs = usePollMs();
-        const current = POLL_OPTIONS.find((option) => option.ms === intervalMs) ?? null;
-
-        return h(
-          CellShell,
-          {
-            wide: wide,
-            mode: 'hover',
-            width: 200,
-            title: t('intervalTitle'),
-            hint: t('intervalHint'),
-            glyph: h(ClockGlyph, null),
-            label: wide && current !== null ? t(current.key) : null,
-            badge: false,
-            renderPopover: (position) =>
-              h(
-                PopoverBox,
-                {
-                  position: position,
-                  width: 200,
-                  title: t('intervalTitle'),
-                  subtitle: t('intervalHint'),
-                  footer: h('span', { className: 'dshogq-logtext' }, t('intervalFooter')),
-                },
-                h(
-                  'div',
-                  { className: 'dshogq-rows' },
-                  POLL_OPTIONS.map((option) =>
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        key: option.key,
-                        className: 'dshogq-navrow',
-                        'data-on': option.ms === intervalMs ? 'true' : 'false',
-                        'aria-pressed': option.ms === intervalMs,
-                        onClick: () => setPollMs(option.ms),
-                      },
-                      h('span', { className: 'dshogq-caret', 'aria-hidden': true }, option.ms === intervalMs ? '✓' : ''),
-                      h('span', { className: 'dshogq-navlabel' }, t(option.key)),
-                    ),
-                  ),
-                ),
-              ),
-          },
-        );
-      };
-    }
 
     return {
       inject: ['slots', 'locale'],
@@ -2084,7 +2082,6 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
             ),
           );
 
-        register('opencode-go-interval', 39, 'intervalTitle', withLocale(makeIntervalCell()));
         register('opencode-go-quota', 40, 'title', makeQuotaCell(ctx));
         register('opencode-go-models', 41, 'modelsTitle', withLocale(makeModelsCell()));
         register('opencode-go-version', 42, 'versionTitle', withLocale(makeVersionCell()));
