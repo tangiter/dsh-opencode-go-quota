@@ -45,6 +45,8 @@ const PROVIDERS_PATH = `${ROUTE_PREFIX}/providers`;
 /** Volcengine Ark Agent Plan: AFP quota, and the plan's catalog plus recent usage. */
 const ARK_USAGE_PATH = `${ROUTE_PREFIX}/ark/usage`;
 const ARK_CATALOG_PATH = `${ROUTE_PREFIX}/ark/catalog`;
+/* Action route that stores the Access Key pair, but only after verifying it. */
+const ARK_CREDENTIALS_PATH = `${ROUTE_PREFIX}/ark/credentials`;
 /** Attribution header, so upstream can tell this client from a bare SDK. */
 const USER_AGENT = 'dsh-opencode-go-quota/2.3.3';
 
@@ -2031,6 +2033,86 @@ export function apply(ctx, config) {
     };
   }
 
+
+  /**
+   * Read a small JSON body from an action request.
+   *
+   * The Host's action routes get the raw IncomingMessage, so the body has to be
+   * collected here; the cap keeps a stray large upload from buffering in memory.
+   */
+  function readJsonBody(req, limitBytes) {
+    return new Promise((resolve) => {
+      let size = 0;
+      const chunks = [];
+      req.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > limitBytes) {
+          resolve({ ok: false, code: 'too-large' });
+          req.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on('end', () => {
+        try {
+          resolve({ ok: true, value: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
+        } catch (error) {
+          resolve({ ok: false, code: 'bad-json' });
+        }
+      });
+      req.on('error', () => resolve({ ok: false, code: 'read-failed' }));
+    });
+  }
+
+  /**
+   * Store a Volcengine Access Key pair, but only after it has signed one real
+   * call: a typo must not replace a working pair, and the browser never learns
+   * whether the old one was good.
+   *
+   * The pair is written through `ctx.credentials.set`, the same store the plugin
+   * reads from — no direct file editing, and no secret in any response.
+   */
+  async function saveArkCredentials(req) {
+    const read = await readJsonBody(req, 4096);
+    if (read.ok !== true) {
+      return { ok: false, code: read.code, message: 'the request body must be a small JSON object' };
+    }
+    const body = read.value !== null && typeof read.value === 'object' ? read.value : {};
+    const accessKeyId = typeof body.accessKeyId === 'string' ? body.accessKeyId.trim() : '';
+    const secretAccessKey = typeof body.secretAccessKey === 'string' ? body.secretAccessKey.trim() : '';
+    if (accessKeyId.length < 8 || secretAccessKey.length < 8) {
+      return { ok: false, code: 'invalid', message: 'both the AccessKey ID and the Secret AccessKey are required' };
+    }
+
+    /* Verify before storing. */
+    const answer = await arkCallOnce('GetAFPUsage', '{}', accessKeyId, secretAccessKey);
+    if (answer.ok !== true) {
+      return { ok: false, code: answer.code, message: answer.message };
+    }
+
+    const credentials = ctx.get('credentials');
+    if (credentials === undefined || typeof credentials.set !== 'function') {
+      return { ok: false, code: 'no-store', message: 'this Host cannot store credentials' };
+    }
+    try {
+      await credentials.set(arkAccessKeyEnv, accessKeyId);
+      await credentials.set(arkSecretKeyEnv, secretAccessKey);
+    } catch (error) {
+      return { ok: false, code: 'store-failed', message: String((error && error.message) || error) };
+    }
+    /* Both answers were cached against the old pair; drop them so the next read
+       uses what was just stored. */
+    cache.delete('ark-usage');
+    cache.delete('ark-catalog');
+
+    const result = answer.result !== null && typeof answer.result === 'object' ? answer.result : {};
+    return {
+      ok: true,
+      planType: typeof result.PlanType === 'string' ? result.PlanType : null,
+      accessKeyEnv: arkAccessKeyEnv,
+      secretKeyEnv: arkSecretKeyEnv,
+    };
+  }
   const watchRefreshMs = clampNumber(settings.watchRefreshMs, 60000, 86400000, 900000);
 
   registerRoute(USAGE_PATH, 'usage', (force) => cached('usage', refreshMs, force, readUsage));
@@ -2042,6 +2124,7 @@ export function apply(ctx, config) {
     registerRoute(ARK_CATALOG_PATH, 'Volcengine Ark plan catalog and usage', (force) =>
       cached('ark-catalog', arkInfoRefreshMs, force, readArkCatalog),
     );
+    registerAction(ARK_CREDENTIALS_PATH, 'store the Volcengine Access Key pair', (req) => saveArkCredentials(req));
   }
   registerAction(SYNC_PATH, 'regenerate the auto-managed model routes', (req) =>
     syncModels(typeof req?.url === 'string' && req.url.indexOf('force=1') !== -1),

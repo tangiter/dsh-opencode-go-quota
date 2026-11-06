@@ -75,6 +75,8 @@ const PROVIDERS_ROUTE = '/opencode-go-quota/providers';
     /** Volcengine Ark Agent Plan: AFP quota, and the plan's models plus usage. */
     const ARK_USAGE_ROUTE = '/opencode-go-quota/ark/usage';
     const ARK_CATALOG_ROUTE = '/opencode-go-quota/ark/catalog';
+    /** Host action: store the Volcengine Access Key pair after verifying it. */
+    const ARK_CREDENTIALS_ROUTE = '/opencode-go-quota/ark/credentials';
     /** Where the previous visit's per-provider id lists live. */
 const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
     /** Where the previous visit's Ark model snapshot lives. */
@@ -142,6 +144,7 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
     const ARK_WIDTH = 300;
     const ARK_PANEL = 320;
     const ARK_PANEL_USAGE = 420;
+    const ARK_CREDENTIALS_WIDTH = 380;
     const ARK_PANEL_WIDE = 560;
     /** Where the previous visit's model snapshot lives. */
     const SNAPSHOT_KEY = 'opencode-go-quota:models:v1';
@@ -220,6 +223,22 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       arkUsageWindow: 'Last {days} days',
       usageToggleHint: 'Open the AFP usage in its own panel',
       modelsToggleHint: 'Show or hide the model list',
+      /* Credential problems and the Ark value form. */
+      goNoCredentialHint: 'Configure an OpenCode Go key under Settings - Models (provider opencode-go, ref OPENCODE_GO_API_KEY); the plugin reuses it automatically.',
+      goUnauthorizedHint: 'The key was rejected. Check or replace it under Settings - Models.',
+      arkNoCredentialHint: 'The plan quota and usage need a Volcengine Access Key (the ark- inference key is rejected by the management plane).',
+      arkUnauthorizedHint: 'The Access Key was rejected. Save a valid pair again.',
+      errNetworkHint: 'The Host could not reach the vendor. Check the proxy, VPN or DNS, then refresh.',
+      arkConfigureTitle: 'Volcengine Access Key',
+      arkConfigureHint: 'Stored on the Host, never sent back',
+      arkConfigureAction: 'Configure Access Key',
+      arkConfigureSave: 'Save and verify',
+      arkConfigureCancel: 'Cancel',
+      arkConfigureEmpty: 'Both fields are required.',
+      arkConfigureSaved: 'Saved. Plan {plan}.',
+      arkConfigureSecurity: 'The pair is written to the Host credential store (ARK_ACCESS_KEY_ID / ARK_SECRET_ACCESS_KEY); it never appears in a response.',
+      arkFieldId: 'AccessKey ID',
+      arkFieldSecret: 'Secret AccessKey',
       verCurrent: 'Current',
       verLatest: 'Latest',
       verUnknown: 'unknown (installation not found)',
@@ -302,6 +321,7 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         retryHint: 'Host 未能读取数据源。',
         errNoCredential: '没有为 {env} 配置凭据。',
         errUnauthorized: 'Go API Key 被拒绝。',
+        errUnauthorizedArk: '火山 Access Key 被拒绝。',
         errRateLimited: '数据源要求降低请求频率。',
         errTimeout: '数据源超时未响应。',
         errNetwork: '无法连接数据源：{detail}',
@@ -335,6 +355,21 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         arkUsageWindow: '近 {days} 天',
         usageToggleHint: '在独立面板里查看 AFP 用量',
         modelsToggleHint: '显示或隐藏模型清单',
+        goNoCredentialHint: '到「设置 → 模型」给 opencode-go 配一把 API Key（引用名 OPENCODE_GO_API_KEY），插件会自动复用。',
+        goUnauthorizedHint: 'Key 被上游拒绝，去「设置 → 模型」检查或换一把。',
+        arkNoCredentialHint: 'AFP 额度与套餐数据需要火山引擎的 Access Key（ark- 开头的推理 API Key 在管控面会被拒）。',
+        arkUnauthorizedHint: 'Access Key 被拒绝，重新填一对正确的。',
+        errNetworkHint: 'Host 连不上对方站点，检查代理 / VPN / DNS 后点刷新。',
+        arkConfigureTitle: '火山引擎 Access Key',
+        arkConfigureHint: '只存在 Host，不会回传',
+        arkConfigureAction: '配置 Access Key',
+        arkConfigureSave: '保存并验证',
+        arkConfigureCancel: '取消',
+        arkConfigureEmpty: '两个字段都要填。',
+        arkConfigureSaved: '已保存，套餐 {plan}。',
+        arkConfigureSecurity: '这对密钥会写进 Host 的凭据存储（ARK_ACCESS_KEY_ID / ARK_SECRET_ACCESS_KEY），任何响应里都不会出现。',
+        arkFieldId: 'AccessKey ID',
+        arkFieldSecret: 'Secret AccessKey',
         verCurrent: '当前',
         verLatest: '最新',
         verUnknown: '未知（找不到安装位置）',
@@ -462,6 +497,30 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       '@keyframes dshogq-toast-fade{0%{opacity:0;transform:translateY(-2px);}8%{opacity:1;transform:none;}',
       '75%{opacity:1;}100%{opacity:0;}}',
       '.dshogq-badge{width:5px;height:5px;border-radius:50%;background:var(--dsw-alias-state-success-primary);flex:none;}',
+      /* A read that failed wears this instead of the green "changed" dot. */
+      '.dshogq-alert{display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;',
+      'border-radius:50%;background:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-bg-overlay);',
+      'font-size:9px;font-weight:600;line-height:1;flex:none;}',
+      /* Failure block: the reason, what to do about it, and the action. */
+      '.dshogq-fail{display:flex;flex-direction:column;gap:5px;padding:4px 8px 8px;}',
+      '.dshogq-fail .dshogq-msg{padding:0;}',
+      '.dshogq-fail .dshogq-note{padding:0;line-height:16px;}',
+      '.dshogq-failbtn{align-self:flex-start;border:1px solid var(--dsw-alias-border-l1);background:transparent;',
+      'color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;line-height:1.5;padding:2px 10px;',
+      'border-radius:var(--dsw-radius-sm);cursor:pointer;}',
+      '.dshogq-failbtn:hover{background:var(--dsw-alias-interactive-bg-hover);}',
+      /* The Access Key form. */
+      '.dshogq-form{display:flex;flex-direction:column;gap:8px;padding:4px 8px 8px;}',
+      '.dshogq-field{display:flex;flex-direction:column;gap:3px;}',
+      '.dshogq-fieldlabel{font-size:10px;color:var(--dsw-alias-label-tertiary);}',
+      '.dshogq-input{height:26px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1);',
+      'border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);',
+      'font:inherit;font-size:11px;outline:none;}',
+      '.dshogq-input:focus{border-color:var(--dsw-alias-brand-primary);}',
+      '.dshogq-formrow{display:flex;gap:6px;align-items:center;}',
+      '.dshogq-formmsg{font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary);}',
+      '.dshogq-formmsg[data-tone="ok"]{color:var(--dsw-alias-state-success-primary);}',
+      '.dshogq-formmsg[data-tone="error"]{color:var(--dsw-alias-state-error-primary);}',
       /* Popover chrome copies the host's menu: no border, one elevation token,
          4px padding, .5px hairlines, host scrollbar tokens, hidden overflow so
          the rounded corners clip the scrolling child. */
@@ -809,14 +868,14 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
     }
 
     /** One-line copy for a Host payload that carries an error code. */
-    function messageFor(payload, t) {
+    function messageFor(payload, t, vendor) {
       const code = payload !== null && typeof payload === 'object' ? payload.code : undefined;
       const detail = payload !== null && typeof payload === 'object' ? String(payload.message ?? '') : '';
       switch (code) {
         case 'no-credential':
           return fill(t('errNoCredential'), { env: envLabelOf(payload) });
         case 'unauthorized':
-          return t('errUnauthorized');
+          return vendor === 'ark' ? t('errUnauthorizedArk') : t('errUnauthorized');
         case 'rate-limited':
           return t('errRateLimited');
         case 'timeout':
@@ -839,10 +898,10 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
     }
 
     /** The shared "this payload failed" line, used by every popover. */
-    function failureLine(state, t) {
+    function failureLine(state, t, vendor) {
       const payload = state.payload;
       const structured = payload !== null && typeof payload === 'object' && typeof payload.ok === 'boolean';
-      if (structured) return messageFor(payload, t);
+      if (structured) return messageFor(payload, t, vendor);
       return `${t('retryHint')} ${String(state.message ?? '')}`.trim();
     }
 
@@ -1072,6 +1131,9 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         cancelClose();
         /* A held button is an in-progress selection, not a departure. */
         if (pressRef.current) return;
+        /* A pinned cell is holding a form the reader is typing into, so moving
+           the pointer away must not tear it down. */
+        if (props.pinned === true) return;
         /* Long enough to walk into the panel at a normal pointer speed. */
         closeTimer.current = window.setTimeout(() => {
           closeTimer.current = 0;
@@ -1177,6 +1239,9 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
             ? null
             : h('span', { className: 'dshogq-celltext', 'data-level': props.labelLevel || 'idle' }, props.label),
           props.badge === true ? h('span', { className: 'dshogq-badge', 'aria-hidden': true }) : null,
+          /* A failed read still has to be visible on the closed cell: the
+             reader would otherwise never hover to find out why it is empty. */
+          props.alert === true ? h('span', { className: 'dshogq-alert', 'aria-hidden': true }, '!') : null,
         ),
         open && typeof props.renderPopover === 'function' ? props.renderPopover(position) : null,
       );
@@ -2061,7 +2126,14 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
           state.phase === 'loading'
             ? h('div', { className: 'dshogq-note' }, t('loading'))
             : state.phase === 'error'
-              ? h('div', { className: 'dshogq-msg' }, failureLine(state, t))
+              ? h(
+                  'div',
+                  { className: 'dshogq-fail' },
+                  h('div', { className: 'dshogq-msg' }, failureLine(state, t)),
+                  credentialAdvice(state.payload, t, 'go') === null
+                    ? null
+                    : h('div', { className: 'dshogq-note' }, credentialAdvice(state.payload, t, 'go')),
+                )
               : !ready
                 ? h('div', { className: 'dshogq-msg' }, t('errShape'))
                 : h(
@@ -2076,6 +2148,7 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
             wide: wide,
             mode: 'hover',
             width: GO_WIDTH,
+            alert: state.phase === 'error',
             title: t('title'),
             hint: hint,
             /* The mark first, then the bars: the seat reads "whose plan" before
@@ -2493,6 +2566,7 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
             mode: 'hover',
             width: 560,
             title: t('providersTitle'),
+            alert: remote.state.phase === 'error',
             hint: t('providersHint'),
             glyph: h(ModelsGlyph, null),
             label: wide && total > 0 ? String(total) : null,
@@ -2623,6 +2697,8 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         const [active, setActive] = React.useState(null);
         /* Which side panel is open: 'usage', 'models', or none. */
         const [panel, setPanel] = React.useState(null);
+        /* Open while the Access Key form is up; the cell is pinned meanwhile. */
+        const [configOpen, setConfigOpen] = React.useState(false);
 
         let highest = { percent: 0, level: 'idle' };
         for (const spec of known) {
@@ -2636,6 +2712,8 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
             wide: wide,
             mode: 'hover',
             width: ARK_WIDTH,
+            pinned: configOpen,
+            alert: quota.state.phase === 'error',
             title: t('arkTitle'),
             hint: ready ? t('arkHint') : t('noData'),
             /* The mark first, then the four AFP bars — same reading order as the
@@ -2653,6 +2731,7 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
               if (!isOpen) {
                 setActive(null);
                 setPanel(null);
+                setConfigOpen(false);
               }
             },
             renderPopover: (position) => {
@@ -2677,8 +2756,27 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
                 shortDays: arkShortDays,
                 longDays: arkLongDays,
                 onOpenPanel: (name) => setPanel((current) => (current === name ? null : name)),
+                onConfigure: () => {
+                  setPanel(null);
+                  setConfigOpen(true);
+                },
               });
-              if (panel === null) return metersPanel;
+              if (configOpen) {
+                return [
+                  metersPanel,
+                  h(ArkCredentialsPanel, {
+                    key: 'credentials',
+                    position: sidePosition(position, ARK_CREDENTIALS_WIDTH),
+                    t: t,
+                    onSaved: () => {
+                      setConfigOpen(false);
+                      quota.refresh();
+                      catalog.refresh();
+                    },
+                    onCancel: () => setConfigOpen(false),
+                  }),
+                ];
+              }
               if (panel === null) return metersPanel;
               const isUsage = panel === 'usage-short' || panel === 'usage-long';
               const side = sidePosition(position, isUsage ? ARK_PANEL_USAGE : ARK_PANEL_WIDE);
@@ -2725,6 +2823,145 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       );
     }
 
+    /** A key glyph for the credentials button. */
+    function KeyGlyph() {
+      return h(
+        'svg',
+        { className: 'dshogq-marksvg', width: 14, height: 14, viewBox: '0 0 16 16', 'aria-hidden': true },
+        h('circle', { cx: 5.4, cy: 5.4, r: 2.9, fill: 'none', stroke: 'currentColor', strokeWidth: 1.4 }),
+        h('path', {
+          d: 'M7.6 7.6 13.6 13.6M11.2 11.2l1.4-1.4M9.6 9.6l1.4-1.4',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.4,
+          strokeLinecap: 'round',
+        }),
+      );
+    }
+
+    /**
+     * What to do about a failed read, in one line.
+     *
+     * The message alone ("no credential is configured for X") says what is wrong
+     * but not where to fix it; this turns each code into the next step.
+     */
+    function credentialAdvice(payload, t, vendor) {
+      const code = payload !== null && typeof payload === 'object' ? payload.code : null;
+      if (code === 'no-credential') return vendor === 'ark' ? t('arkNoCredentialHint') : t('goNoCredentialHint');
+      if (code === 'unauthorized') return vendor === 'ark' ? t('arkUnauthorizedHint') : t('goUnauthorizedHint');
+      if (code === 'network' || code === 'timeout') return t('errNetworkHint');
+      return null;
+    }
+
+    /**
+     * The Access Key form.
+     *
+     * It is a panel of its own and it pins its cell while open: a hover popover
+     * would vanish the moment the pointer left for the keyboard, and the reader
+     * would lose what they typed.
+     */
+    function ArkCredentialsPanel(props) {
+      const t = props.t;
+      const [accessKeyId, setAccessKeyId] = React.useState('');
+      const [secretAccessKey, setSecretAccessKey] = React.useState('');
+      const [busy, setBusy] = React.useState(false);
+      const [result, setResult] = React.useState(null);
+
+      const submit = async () => {
+        if (busy) return;
+        const id = accessKeyId.trim();
+        const secret = secretAccessKey.trim();
+        if (id.length === 0 || secret.length === 0) {
+          setResult({ ok: false, message: t('arkConfigureEmpty') });
+          return;
+        }
+        setBusy(true);
+        setResult(null);
+        try {
+          const response = await fetch(ARK_CREDENTIALS_ROUTE, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({ accessKeyId: id, secretAccessKey: secret }),
+          });
+          const answer = await response.json();
+          if (answer !== null && typeof answer === 'object' && answer.ok === true) {
+            setAccessKeyId('');
+            setSecretAccessKey('');
+            setResult({ ok: true, message: fill(t('arkConfigureSaved'), { plan: answer.planType ?? '—' }) });
+            /* Leave the confirmation on screen for a moment before the panel
+               closes and the meters reload. */
+            if (typeof props.onSaved === 'function') window.setTimeout(() => props.onSaved(answer), 900);
+          } else {
+            const message =
+              answer !== null && typeof answer === 'object' && answer.code === 'invalid'
+                ? String(answer.message ?? '')
+                : messageFor(answer, t, 'ark');
+            setResult({ ok: false, message: message });
+          }
+        } catch (error) {
+          setResult({ ok: false, message: String((error && error.message) || error) });
+        }
+        setBusy(false);
+      };
+
+      const field = (label, value, onChange) =>
+        h(
+          'label',
+          { className: 'dshogq-field' },
+          h('span', { className: 'dshogq-fieldlabel' }, label),
+          h('input', {
+            className: 'dshogq-input',
+            type: 'password',
+            value: value,
+            spellCheck: false,
+            autoComplete: 'off',
+            'aria-label': label,
+            onChange: (event) => onChange(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter') submit();
+            },
+          }),
+        );
+
+      return h(
+        PopoverBox,
+        {
+          position: props.position,
+          width: ARK_CREDENTIALS_WIDTH,
+          size: 'large',
+          title: t('arkConfigureTitle'),
+          subtitle: t('arkConfigureHint'),
+          mark: h(ArkGlyph, null),
+        },
+        h(
+          'div',
+          { className: 'dshogq-form' },
+          field(t('arkFieldId'), accessKeyId, setAccessKeyId),
+          field(t('arkFieldSecret'), secretAccessKey, setSecretAccessKey),
+          h(
+            'div',
+            { className: 'dshogq-formrow' },
+            h(
+              'button',
+              { type: 'button', className: 'dshogq-sync', disabled: busy, onClick: submit },
+              busy ? t('loading') : t('arkConfigureSave'),
+            ),
+            h(
+              'button',
+              { type: 'button', className: 'dshogq-failbtn', onClick: () => {
+                if (typeof props.onCancel === 'function') props.onCancel();
+              } },
+              t('arkConfigureCancel'),
+            ),
+          ),
+          result === null
+            ? null
+            : h('div', { className: 'dshogq-formmsg', 'data-tone': result.ok ? 'ok' : 'error' }, result.message),
+          h('div', { className: 'dshogq-formmsg' }, t('arkConfigureSecurity')),
+        ),
+      );
+    }
+
     /**
      * The Ark meters: four AFP windows and the corner row that opens the plan's
      * catalog and its usage in panels of their own.
@@ -2747,7 +2984,29 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       if (props.quotaState.phase === 'loading') {
         meters = h('div', { className: 'dshogq-note' }, t('loading'));
       } else if (props.quotaState.phase === 'error') {
-        meters = h('div', { className: 'dshogq-msg' }, failureLine(props.quotaState, t));
+      } else if (props.quotaState.phase === 'error') {
+        const failure = props.quotaState.payload;
+        const advice = credentialAdvice(failure, t, 'ark');
+        const needsKey = failure !== null && typeof failure === 'object' && (failure.code === 'no-credential' || failure.code === 'unauthorized');
+        meters = h(
+          'div',
+          { className: 'dshogq-fail' },
+          h('div', { className: 'dshogq-msg' }, failureLine(props.quotaState, t, 'ark')),
+          advice === null ? null : h('div', { className: 'dshogq-note' }, advice),
+          needsKey
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dshogq-failbtn',
+                  onClick: () => {
+                    if (typeof props.onConfigure === 'function') props.onConfigure();
+                  },
+                },
+                t('arkConfigureAction'),
+              )
+            : null,
+        );
       } else if (props.ready !== true) {
         meters = h('div', { className: 'dshogq-msg' }, t('errShape'));
       } else {
@@ -2779,6 +3038,19 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
             h(
               'span',
               { className: 'dshogq-links' },
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dshogq-clock',
+                  title: t('arkConfigureTitle'),
+                  'aria-label': t('arkConfigureTitle'),
+                  onClick: () => {
+                    if (typeof props.onConfigure === 'function') props.onConfigure();
+                  },
+                },
+                h(KeyGlyph, null),
+              ),
               h('a', { className: 'dshogq-link', href: ARK_CONSOLE_URL, target: '_blank', rel: 'noreferrer' }, t('arkConsoleLink')),
               h('span', { className: 'dshogq-linksep', 'aria-hidden': true }, '·'),
               h('a', { className: 'dshogq-link', href: ARK_DOCS_URL, target: '_blank', rel: 'noreferrer' }, t('arkDocsLink')),
@@ -2838,7 +3110,7 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       if (props.catalogState.phase === 'loading') {
         list = h('div', { className: 'dshogq-note' }, t('loading'));
       } else if (props.catalogState.phase === 'error') {
-        list = h('div', { className: 'dshogq-msg' }, failureLine(props.catalogState, t));
+        list = h('div', { className: 'dshogq-msg' }, failureLine(props.catalogState, t, 'ark'));
       } else if (models.length === 0) {
         list = h('div', { className: 'dshogq-note' }, t('errShape'));
       } else {
@@ -2985,7 +3257,7 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       if (props.catalogState.phase === 'loading') {
         body = h('div', { className: 'dshogq-note' }, t('loading'));
       } else if (props.catalogState.phase === 'error') {
-        body = h('div', { className: 'dshogq-msg' }, failureLine(props.catalogState, t));
+        body = h('div', { className: 'dshogq-msg' }, failureLine(props.catalogState, t, 'ark'));
       } else if (usage === null) {
         body = h('div', { className: 'dshogq-msg' }, t('errShape'));
       } else {
