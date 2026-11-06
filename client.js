@@ -2057,11 +2057,6 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
            behind" — that condition never clears, and a dot that is always on has
            stopped saying anything. */
         const updated = diff !== null && diff.first === false && (diff.added.length > 0 || diff.removed.length > 0);
-        const version =
-          state.phase === 'ready' && state.payload !== null && typeof state.payload.source?.version === 'string'
-            ? state.payload.source.version
-            : null;
-
         const meters =
           state.phase === 'loading'
             ? h('div', { className: 'dshogq-note' }, t('loading'))
@@ -2105,7 +2100,7 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
                 position: position,
                 t: t,
                 subtitle: ready ? fill(t('updatedAt'), { time: clockTime(state.payload.fetchedAt) }) : null,
-                footerLabel: version === null ? t('footer') : `${t('footer')} · v${version}`,
+                footerLabel: t('footer'),
                 meters: meters,
                 onRefresh: () => {
                   quota.refresh();

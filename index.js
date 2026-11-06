@@ -46,7 +46,7 @@ const PROVIDERS_PATH = `${ROUTE_PREFIX}/providers`;
 const ARK_USAGE_PATH = `${ROUTE_PREFIX}/ark/usage`;
 const ARK_CATALOG_PATH = `${ROUTE_PREFIX}/ark/catalog`;
 /** Attribution header, so upstream can tell this client from a bare SDK. */
-const USER_AGENT = 'dsh-opencode-go-quota/2.2.0';
+const USER_AGENT = 'dsh-opencode-go-quota/2.3.3';
 
 /**
  * The four rolling AFP windows `GetAFPUsage` reports, in display order.
