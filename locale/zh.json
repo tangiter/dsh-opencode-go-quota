@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "OpenCode Go 侧边栏",
-    "description": "侧边栏底部三个单元格：Go 套餐用量、模型目录与快照差异、DSH 版本检查与更新日志。"
+    "title": "OpenCode Go / 火山方舟 侧边栏",
+    "description": "侧边栏底部的可开关板块：Go 套餐用量、模型目录与快照差异、DSH 版本检查、火山方舟 Agent Plan 的 AFP 额度与套餐用量，以及第三方模型目录。"
   }
 }

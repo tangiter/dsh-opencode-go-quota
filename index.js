@@ -25,6 +25,7 @@
  * previous snapshot (kept in the browser).
  */
 
+import { createHash, createHmac } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,8 +42,24 @@ const VERSION_PATH = `${ROUTE_PREFIX}/version`;
 const SYNC_PATH = `${ROUTE_PREFIX}/models/sync`;
 /** Third-party provider catalogs (Agnes / SenseNova), one row per configured provider. */
 const PROVIDERS_PATH = `${ROUTE_PREFIX}/providers`;
+/** Volcengine Ark Agent Plan: AFP quota, and the plan's catalog plus recent usage. */
+const ARK_USAGE_PATH = `${ROUTE_PREFIX}/ark/usage`;
+const ARK_CATALOG_PATH = `${ROUTE_PREFIX}/ark/catalog`;
 /** Attribution header, so upstream can tell this client from a bare SDK. */
-const USER_AGENT = 'dsh-opencode-go-quota/1.8.0';
+const USER_AGENT = 'dsh-opencode-go-quota/2.2.0';
+
+/**
+ * The four rolling AFP windows `GetAFPUsage` reports, in display order.
+ *
+ * `AFPFiveHour` carries `-1` timestamps while no 5-hour window is running, so a
+ * window is only drawn with a countdown when its `ResetTime` is a real instant.
+ */
+const ARK_AFP_WINDOWS = [
+  { id: 'fiveHour', field: 'AFPFiveHour', labelKey: 'arkWindow5h' },
+  { id: 'daily', field: 'AFPDaily', labelKey: 'arkWindowDaily' },
+  { id: 'weekly', field: 'AFPWeekly', labelKey: 'arkWindowWeekly' },
+  { id: 'monthly', field: 'AFPMonthly', labelKey: 'arkWindowMonthly' },
+];
 
 /** The three metered windows, in the order the popover lists them. */
 const WINDOW_IDS = ['rolling', 'weekly', 'monthly'];
@@ -312,6 +329,24 @@ export function apply(ctx, config) {
   const timeoutMs = clampNumber(settings.timeoutMs, 1000, 120000, 15000);
   const registryUrl = String(settings.registryUrl ?? 'https://registry.npmjs.org').replace(/\/+$/u, '');
   const releasesRepo = String(settings.releasesRepo ?? RELEASES_REPO);
+
+  /* ── Volcengine Ark Agent Plan ───────────────────────────────────────
+     The plan's three reads live on the management plane, which accepts only
+     an Access Key signature — the `ark-…` inference key is rejected there
+     (`InvalidAccessKey`, measured). So this half holds an AK/SK pair, both
+     resolved through ctx.credentials and never serialized into a response. */
+  const arkConfig = settings.ark !== null && typeof settings.ark === 'object' ? settings.ark : {};
+  const arkEnabled = arkConfig.enabled !== false;
+  const arkRegion = String(arkConfig.region ?? 'cn-beijing');
+  const arkService = String(arkConfig.service ?? 'ark');
+  const arkVersion = String(arkConfig.version ?? '2024-01-01');
+  const arkAccessKeyEnv = String(arkConfig.accessKeyEnv ?? 'ARK_ACCESS_KEY_ID');
+  const arkSecretKeyEnv = String(arkConfig.secretKeyEnv ?? 'ARK_SECRET_ACCESS_KEY');
+  const arkPlanEdition = String(arkConfig.planEdition ?? 'personal');
+  const arkUsageDays = clampNumber(arkConfig.usageDays, 1, 31, 7);
+  const arkUsageLongDays = clampNumber(arkConfig.usageLongDays, 8, 31, 30);
+  const arkRefreshMs = clampNumber(arkConfig.refreshMs, 5000, 3600000, refreshMs);
+  const arkInfoRefreshMs = clampNumber(arkConfig.infoRefreshMs, 60000, 86400000, infoRefreshMs);
 
   /** One cached answer per key, carrying the in-flight read that produces it. */
   const cache = new Map();
@@ -620,6 +655,12 @@ export function apply(ctx, config) {
       channelDates: channelDates,
       latest: latest,
       latestPublishedAt: latest === null ? null : isoOrNull(times[latest]),
+      /* The running build usually has no npm tag of its own; its date comes from
+         the release feed when that build was published. */
+      currentPublishedAt:
+        current === null
+          ? null
+          : (isoOrNull(publishedAt.get(current)) ?? isoOrNull(times[current])),
       updateAvailable: current !== null && latest !== null && compareVersions(latest, current) > 0,
       newerCount: newer.length,
       releases: releases,
@@ -1298,6 +1339,9 @@ export function apply(ctx, config) {
           staticModels: snapshotOf(spec.staticModels, fallback.staticModels),
           staticAsOf: pick(spec.staticAsOf, fallback.staticAsOf) ?? null,
           consoleUrl: pick(spec.consoleUrl, fallback.consoleUrl) ?? null,
+          /* Per-model output kind, for gateways whose names say nothing:
+             `modalities: { 'my-flux-model': image }`. */
+          modalities: spec.modalities !== null && typeof spec.modalities === 'object' ? spec.modalities : null,
         };
       });
   }
@@ -1367,12 +1411,50 @@ export function apply(ctx, config) {
   const chunkCache = new Map();
 
   /**
+   * Which kind of artifact a model produces: `text`, `image` or `video`.
+   *
+   * Neither gateway publishes a clean capability field — Agnes' catalog is a
+   * documentation index (ids only) and SenseNova's is a Markdown table whose
+   * Description column happens to say "image creation model" / "video". So the
+   * kind is read from whatever prose exists (id, name, description) and falls
+   * back to `text`, which is the majority case on both.
+   */
+  function modalityOf(...parts) {
+    const text = parts.filter((part) => typeof part === 'string').join(' ').toLowerCase();
+    /* A generation verb wins over a mention: "text-to-video" is video even
+       though it also contains "text". */
+    if (/(?:\bvideo\b|text-to-video|image-to-video|seedance|\bt2v\b|\bi2v\b)/u.test(text)) return 'video';
+    if (/(?:\bimage\b|\bimages\b|text-to-image|image-to-image|seedream|dall-?e|flux|kolors)/u.test(text)) return 'image';
+    return 'text';
+  }
+
+  /**
+   * Attach `modality` to every model of one provider.
+   *
+   * `override` is the provider's own `modalities` map from the plugin config: an
+   * explicit answer there always beats the guess, so a gateway that names its
+   * models unpredictably stays classifiable without a code change.
+   */
+  function withModalities(models, override) {
+    const table = override !== null && typeof override === 'object' ? override : {};
+    return models.map((model) => {
+      const explicit = table[model.id];
+      const modality =
+        explicit === 'text' || explicit === 'image' || explicit === 'video'
+          ? explicit
+          : modalityOf(model.id, model.name, model.description, model.note);
+      return Object.assign({}, model, { modality: modality });
+    });
+  }
+
+  /**
    * Parse a Markdown model table out of a chunk's source text.
    *
    * Rows look like `| SenseNova 6.8 Flash | \`sensenova-6.8-flash\` | … |`, with
    * padding spaces and escaped newlines because this is a JavaScript string.
    * Only rows whose second cell is a backticked id count, so the separator line
-   * and any prose are skipped.
+   * and any prose are skipped. The trailing cell is kept as the description —
+   * it is what tells an image model from a chat model.
    */
   function parseModelTable(text) {
     const header = MODEL_TABLE_HEADER.exec(text);
@@ -1391,7 +1473,13 @@ export function apply(ctx, config) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(id) || seen.has(id)) continue;
       seen.add(id);
       const name = cells[1].replace(/\s+/gu, ' ').trim();
-      models.push({ id: id, name: name.length > 0 ? name : id, contextWindow: null });
+      const description = cells
+        .slice(3)
+        .join(' ')
+        .replace(/<br\s*\/?>/giu, ' ')
+        .replace(/\s+/gu, ' ')
+        .trim();
+      models.push({ id: id, name: name.length > 0 ? name : id, contextWindow: null, description: description });
     }
     return models.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
@@ -1501,8 +1589,8 @@ export function apply(ctx, config) {
     return Object.assign({}, head, { ok: true, via: 'docs', docsIndex: spec.docsIndex, models: models });
   }
 
-  /** One provider's live catalog: GET <baseUrl>/models, normalized and sorted. */
-  async function readProviderCatalog(spec) {
+  /** One provider's catalog from whichever source answers; see the wrapper below. */
+  async function readProviderCatalogRaw(spec) {
     const head = {
       id: spec.id,
       label: spec.label,
@@ -1604,6 +1692,21 @@ export function apply(ctx, config) {
     return Object.assign({}, head, { ok: true, models: models });
   }
 
+  /**
+   * One provider's catalog, with every model tagged `text` / `image` / `video`.
+   *
+   * The tag is computed here rather than in each source parser, so the docs
+   * index, the chunk table, the static snapshot and the live endpoint all get it
+   * from the same rule — and a configured `modalities` map wins over the guess.
+   */
+  async function readProviderCatalog(spec) {
+    const answer = await readProviderCatalogRaw(spec);
+    if (answer !== null && answer !== undefined && Array.isArray(answer.models)) {
+      return Object.assign({}, answer, { models: withModalities(answer.models, spec.modalities) });
+    }
+    return answer;
+  }
+
   /** A catalog read retried across transport-only failures, like {@link goJson}. */
   async function readProviderCatalogRetrying(spec) {
     for (let attempt = 1; ; attempt += 1) {
@@ -1630,12 +1733,313 @@ export function apply(ctx, config) {
     return { ok: true, source: source(), fetchedAt: new Date().toISOString(), providers: providers };
   }
 
+  // ───────────────────────────────────────────────────────────────────────
+  // 「火山引擎 Agent Plan」：AFP 额度 / 套餐模型 / 用量明细
+  //
+  // 这三个接口都在管控面 `ark.<region>.volcengineapi.com` 上，只认 Access Key
+  // 签名（Authorization: HMAC-SHA256 Credential=AK/date/region/service/request,
+  // SignedHeaders=…, Signature=…）。`ark-` 开头的推理 API Key 拿过来会被拒
+  // （实测返回 InvalidAccessKey），所以这里要的是一对 AK/SK，两个都经
+  // ctx.credentials 解析，任何响应里都不会出现它们。
+  // ───────────────────────────────────────────────────────────────────────
+
+  const ARK_HOST = `ark.${arkRegion}.volcengineapi.com`;
+
+  function sha256Hex(text) {
+    return createHash('sha256').update(text, 'utf8').digest('hex');
+  }
+
+  function hmacSha256(key, text) {
+    return createHmac('sha256', key).update(text, 'utf8').digest();
+  }
+
+  /** `YYYY-MM-DD` of an epoch-millisecond instant, in this Host's time zone. */
+  function dateStamp(ms) {
+    const date = new Date(ms);
+    const pad = (value) => (value < 10 ? `0${value}` : String(value));
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+
+  /**
+   * Sign one management-plane POST the way Volcengine expects.
+   *
+   * The canonical headers must be sorted and joined without a trailing blank
+   * line; the credential scope reuses the calendar day of the very same `x-date`
+   * instant, or the signature silently stops matching near midnight UTC.
+   */
+  function arkSignedRequest(action, body, accessKeyId, secretAccessKey) {
+    const query = `Action=${encodeURIComponent(action)}&Version=${encodeURIComponent(arkVersion)}`;
+    const xDate = new Date().toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}/u, '');
+    const date = xDate.slice(0, 8);
+    const payloadHash = sha256Hex(body);
+    const signedHeaders = 'content-type;host;x-content-sha256;x-date';
+    const canonicalHeaders = `content-type:application/json\nhost:${ARK_HOST}\nx-content-sha256:${payloadHash}\nx-date:${xDate}\n`;
+    const canonicalRequest = ['POST', '/', query, canonicalHeaders, signedHeaders, payloadHash].join('\n');
+    const scope = `${date}/${arkRegion}/${arkService}/request`;
+    const stringToSign = ['HMAC-SHA256', xDate, scope, sha256Hex(canonicalRequest)].join('\n');
+    const signingKey = hmacSha256(
+      hmacSha256(hmacSha256(hmacSha256(secretAccessKey, date), arkRegion), arkService),
+      'request',
+    );
+    const signature = createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
+    return {
+      url: `https://${ARK_HOST}/?${query}`,
+      headers: {
+        'content-type': 'application/json',
+        host: ARK_HOST,
+        'x-content-sha256': payloadHash,
+        'x-date': xDate,
+        authorization: `HMAC-SHA256 Credential=${accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+      },
+      body: body,
+    };
+  }
+
+  /** Ark responses answer 4xx for a rejected key and 200 for a served call. */
+  function arkErrorOf(status, body) {
+    const error = body !== null && typeof body === 'object' && body.ResponseMetadata !== null && typeof body.ResponseMetadata === 'object'
+      ? body.ResponseMetadata.Error
+      : undefined;
+    const code = error !== null && typeof error === 'object' && typeof error.Code === 'string' ? error.Code : null;
+    const message = error !== null && typeof error === 'object' && typeof error.Message === 'string' ? error.Message : null;
+    if (code === 'InvalidAccessKey' || code === 'InvalidAuthorization' || code === 'SignatureDoesNotMatch') {
+      return { ok: false, code: 'unauthorized', message: message ?? code };
+    }
+    if (status === 429 || code === 'TooManyRequests' || code === 'RequestLimitExceeded') {
+      return { ok: false, code: 'rate-limited', message: message ?? `HTTP ${status}` };
+    }
+    if (status === 401 || status === 403) return { ok: false, code: 'unauthorized', message: message ?? `HTTP ${status}` };
+    return {
+      ok: false,
+      code: 'upstream',
+      message: code === null ? `HTTP ${status}` : `${code}: ${String(message ?? '').slice(0, 160)}`,
+    };
+  }
+
+  /** One attempt at a signed management-plane call. */
+  async function arkCallOnce(action, body, accessKeyId, secretAccessKey) {
+    const request = arkSignedRequest(action, body, accessKeyId, secretAccessKey);
+    let response;
+    try {
+      response = await fetch(request.url, {
+        method: 'POST',
+        headers: request.headers,
+        body: request.body,
+        signal: timeoutSignal(timeoutMs),
+      });
+    } catch (error) {
+      const name = error !== null && typeof error === 'object' ? error.name : undefined;
+      if (name === 'TimeoutError' || name === 'AbortError') {
+        return { ok: false, code: 'timeout', message: `${action} did not answer within ${timeoutMs} ms` };
+      }
+      return { ok: false, code: 'network', message: String((error && error.message) || error) };
+    }
+    let body2;
+    try {
+      body2 = await response.json();
+    } catch (error) {
+      return { ok: false, code: 'upstream', message: `HTTP ${response.status} with no JSON body` };
+    }
+    if (!response.ok) return arkErrorOf(response.status, body2);
+    /* A 200 can still carry an error object; the gateway uses both shapes. */
+    const error = body2 !== null && typeof body2 === 'object' && body2.ResponseMetadata !== null && typeof body2.ResponseMetadata === 'object'
+      ? body2.ResponseMetadata.Error
+      : undefined;
+    if (error !== undefined && error !== null) return arkErrorOf(response.status, body2);
+    return { ok: true, result: body2 !== null && typeof body2 === 'object' ? body2.Result : undefined };
+  }
+
+  /** Resolve the AK/SK pair, then call, retrying transport failures only. */
+  async function arkCall(action, payload) {
+    if (arkEnabled !== true) return { ok: false, code: 'disabled', message: 'the Ark half is turned off in the plugin config' };
+    const accessKeyId = await resolveRef(arkAccessKeyEnv);
+    const secretAccessKey = await resolveRef(arkSecretKeyEnv);
+    if (accessKeyId === undefined || secretAccessKey === undefined) {
+      const missing = [];
+      if (accessKeyId === undefined) missing.push(arkAccessKeyEnv);
+      if (secretAccessKey === undefined) missing.push(arkSecretKeyEnv);
+      return {
+        ok: false,
+        code: 'no-credential',
+        message: `no Access Key is configured for ${missing.join(' / ')}`,
+        missing: missing,
+      };
+    }
+    const body = JSON.stringify(payload ?? {});
+    for (let attempt = 1; ; attempt += 1) {
+      const answer = await arkCallOnce(action, body, accessKeyId, secretAccessKey);
+      if (answer.ok === true || attempt >= READ_ATTEMPTS) return answer;
+      if (answer.code !== 'network' && answer.code !== 'timeout') return answer;
+      await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS * attempt));
+    }
+  }
+
+  const arkSource = () => ({
+    accessKeyEnv: arkAccessKeyEnv,
+    secretKeyEnv: arkSecretKeyEnv,
+    region: arkRegion,
+    planEdition: arkPlanEdition,
+    version: pluginVersion,
+  });
+
+  /**
+   * AFP quota, normalized to the same window shape the Go meters use.
+   *
+   * `Quota` and `Used` arrive as strings (they carry fractions), and the
+   * 5-hour window reports `-1` timestamps while it is not running — that is a
+   * real state, not an error, so it is reported as "no window" instead of a
+   * countdown from 1970.
+   */
+  async function readArkUsage() {
+    for (let attempt = 1; ; attempt += 1) {
+      const answer = await arkCall('GetAFPUsage', {});
+      if (answer.ok !== true) return Object.assign({ source: arkSource() }, answer);
+      const result = answer.result !== null && typeof answer.result === 'object' ? answer.result : {};
+      const windows = [];
+      for (const spec of ARK_AFP_WINDOWS) {
+        const raw = result[spec.field];
+        if (raw === null || typeof raw !== 'object') continue;
+        const quota = numberOrNull(raw.Quota);
+        const used = numberOrNull(raw.Used);
+        if (quota === null || quota <= 0) continue;
+        const percent = Math.min(100, Math.max(0, ((used ?? 0) / quota) * 100));
+        const resetTime = numberOrNull(raw.ResetTime);
+        windows.push({
+          id: spec.id,
+          labelKey: spec.labelKey,
+          quota: quota,
+          used: used ?? 0,
+          percent: Math.round(percent * 100) / 100,
+          resetsAt: resetTime !== null && resetTime > 0 ? new Date(resetTime).toISOString() : null,
+          startedAt: numberOrNull(raw.SubscribeTime) > 0 ? new Date(numberOrNull(raw.SubscribeTime)).toISOString() : null,
+          status: resetTime !== null && resetTime > 0 ? 'ok' : 'idle',
+        });
+      }
+      if (windows.length > 0) {
+        return {
+          ok: true,
+          source: arkSource(),
+          fetchedAt: new Date().toISOString(),
+          planType: typeof result.PlanType === 'string' ? result.PlanType : null,
+          windows: windows,
+        };
+      }
+      /* A 200 with no window at all is almost always a gateway blip rather than
+         a plan without quota, so one retry keeps it out of the panel. */
+      if (attempt >= 2) {
+        return { ok: false, code: 'shape', message: 'GetAFPUsage returned no AFP window', source: arkSource() };
+      }
+      await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS * attempt));
+    }
+  }
+
+  /** Fold the per-day usage rows into one total per model and per day. */
+  function summarizeArkUsage(result) {
+    const rows = Array.isArray(result !== null && typeof result === 'object' ? result.Details : undefined) ? result.Details : [];
+    const byModel = new Map();
+    const byDay = new Map();
+    let tokens = 0;
+    let images = 0;
+    for (const row of rows) {
+      if (row === null || typeof row !== 'object' || typeof row.ObjectName !== 'string') continue;
+      const unit = row.Unit === 'Images' ? 'Images' : 'Tokens';
+      const usage = numberOrNull(row.Usage) ?? 0;
+      const key = `${row.ObjectName}\u0000${unit}`;
+      const entry = byModel.get(key) ?? { name: row.ObjectName, unit: unit, usage: 0 };
+      entry.usage += usage;
+      byModel.set(key, entry);
+      if (unit === 'Images') images += usage;
+      else tokens += usage;
+      const time = numberOrNull(row.Time);
+      if (time !== null) {
+        const stamp = dateStamp(time);
+        const day = byDay.get(stamp) ?? { date: stamp, tokens: 0, images: 0 };
+        if (unit === 'Images') day.images += usage;
+        else day.tokens += usage;
+        byDay.set(stamp, day);
+      }
+    }
+    const models = [...byModel.values()].sort((left, right) => right.usage - left.usage);
+    const days = [...byDay.values()].sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : 0));
+    return { ok: true, rows: rows.length, totals: { tokens: tokens, images: images }, byModel: models, byDay: days };
+  }
+
+  /**
+   * The plan's catalog plus the usage feed, read together.
+   *
+   * The model list is the authority on what the plan serves; the usage feed
+   * answers where the AFP went. They move on different clocks, but both are
+   * slow enough to share one cache and one refresh button.
+   */
+  async function readArkCatalog() {
+    const to = new Date();
+    /* Two windows at once: the short one answers how much was spent lately, the
+       long one how the plan looks over a month. Same feed, so one refresh pays
+       for both. */
+    const usageWindow = (days) => {
+      const from = new Date(to.getTime() - (days - 1) * 86400000);
+      return { days: days, from: dateStamp(from.getTime()), to: dateStamp(to.getTime()) };
+    };
+    const shortWindow = usageWindow(arkUsageDays);
+    const longWindow = usageWindow(arkUsageLongDays);
+    const [catalogAnswer, shortAnswer, longAnswer] = await Promise.all([
+      arkCall('ListArkAgentPlanModel', { Edition: arkPlanEdition }),
+      arkCall('GetUsageDetails', {
+        QueryInterval: 'Day',
+        Filter: { StartTime: shortWindow.from, EndTime: shortWindow.to },
+      }),
+      arkCall('GetUsageDetails', {
+        QueryInterval: 'Day',
+        Filter: { StartTime: longWindow.from, EndTime: longWindow.to },
+      }),
+    ]);
+    if (catalogAnswer.ok !== true) return Object.assign({ source: arkSource() }, catalogAnswer);
+    const rows = Array.isArray(catalogAnswer.result !== null && typeof catalogAnswer.result === 'object' ? catalogAnswer.result.Datas : undefined)
+      ? catalogAnswer.result.Datas
+      : [];
+    const models = rows
+      .filter((row) => row !== null && typeof row === 'object' && typeof row.ModelID === 'string')
+      .map((row) => {
+        const capability = row.ModelCapability !== null && typeof row.ModelCapability === 'object' ? row.ModelCapability : {};
+        return {
+          id: row.ModelID,
+          contextWindow: numberOrNull(capability.ContextWindow),
+          maxOutputTokens: numberOrNull(capability.MaxCompletionTokens),
+          input: Array.isArray(capability.InputModalities) ? capability.InputModalities.filter((item) => typeof item === 'string') : [],
+        };
+      })
+      .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+    if (models.length === 0) {
+      return { ok: false, code: 'shape', message: 'the plan model list returned no model', source: arkSource() };
+    }
+    const usageOf = (answer, window) =>
+      answer.ok === true
+        ? Object.assign({ from: window.from, to: window.to, days: window.days }, summarizeArkUsage(answer.result))
+        : { ok: false, code: answer.code, message: answer.message, from: window.from, to: window.to, days: window.days };
+    return {
+      ok: true,
+      source: arkSource(),
+      fetchedAt: new Date().toISOString(),
+      edition: arkPlanEdition,
+      total: models.length,
+      models: models,
+      usage: usageOf(shortAnswer, shortWindow),
+      usageLong: usageOf(longAnswer, longWindow),
+    };
+  }
+
   const watchRefreshMs = clampNumber(settings.watchRefreshMs, 60000, 86400000, 900000);
 
   registerRoute(USAGE_PATH, 'usage', (force) => cached('usage', refreshMs, force, readUsage));
   registerRoute(MODELS_PATH, 'models', (force) => cached('models', infoRefreshMs, force, readModels));
   registerRoute(VERSION_PATH, 'version', (force) => cached('version', infoRefreshMs, force, readVersion));
   registerRoute(PROVIDERS_PATH, 'third-party provider catalogs', (force) => cached('providers', watchRefreshMs, force, readProviders));
+  if (arkEnabled === true) {
+    registerRoute(ARK_USAGE_PATH, 'Volcengine Ark AFP quota', (force) => cached('ark-usage', arkRefreshMs, force, readArkUsage));
+    registerRoute(ARK_CATALOG_PATH, 'Volcengine Ark plan catalog and usage', (force) =>
+      cached('ark-catalog', arkInfoRefreshMs, force, readArkCatalog),
+    );
+  }
   registerAction(SYNC_PATH, 'regenerate the auto-managed model routes', (req) =>
     syncModels(typeof req?.url === 'string' && req.url.indexOf('force=1') !== -1),
   );

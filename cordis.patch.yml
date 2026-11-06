@@ -23,6 +23,22 @@
         registryUrl: https://registry.npmjs.org
         # Where the bilingual release notes are read from.
         releasesRepo: deepseek-ai/deepseek-harness
+        # ── Volcengine Ark Agent Plan (v1.9.0) ─────────────────────────────
+        # AFP quota, the plan's model list, and its usage details. All three are
+        # management-plane calls on `ark.<region>.volcengineapi.com`, which accept
+        # only an Access Key signature — an `ark-…` inference key is answered with
+        # InvalidAccessKey. The pair below is resolved through ctx.credentials,
+        # so neither value is ever stored here or sent to the browser.
+        ark:
+          enabled: true
+          region: cn-beijing
+          service: ark
+          planEdition: personal      # personal | enterprise
+          usageDays: 7               # 1–31, the window the usage detail covers
+          refreshMs: 60000           # AFP quota cache
+          infoRefreshMs: 900000      # plan catalog + usage cache
+          accessKeyEnv: ARK_ACCESS_KEY_ID
+          secretKeyEnv: ARK_SECRET_ACCESS_KEY
         # ── Third-party catalogs (opt-in, v1.6.0) ──────────────────────────
         # Leave `watchProviders` out and the fourth cell does not exist at all.
         # Each entry is any OpenAI-compatible gateway: the Host reads

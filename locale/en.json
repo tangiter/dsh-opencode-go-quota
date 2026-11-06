@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "OpenCode Go sidebar",
-    "description": "Three cells in the sidebar foot: Go plan meters, the model catalog with a snapshot diff, and a DSH version check with release notes."
+    "title": "OpenCode Go / Ark sidebar",
+    "description": "Switchable cells in the sidebar foot: Go plan meters, the model catalog with a snapshot diff, a DSH version check, Volcengine Ark Agent Plan AFP quota and usage, and third-party catalogs."
   }
 }
