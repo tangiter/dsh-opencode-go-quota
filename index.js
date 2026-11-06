@@ -649,6 +649,9 @@ export function apply(ctx, config) {
     }
     return {
       ok: true,
+      /* Every payload carries this plugin's own version, so the settings popover
+         can print it even though it reads this route and not the meter ones. */
+      source: source(),
       fetchedAt: new Date().toISOString(),
       current: current,
       channels: channels,

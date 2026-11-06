@@ -611,6 +611,7 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
       '.dshogq-tool:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);}',
       '.dshogq-tool:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));}',
       '.dshogq-toolcount{margin-left:auto;font-size:10px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;}',
+      '.dshogq-pluginver{margin-left:auto;font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;white-space:nowrap;}',
       '.dshogq-panelnote{min-height:19px;padding:0 8px 2px;font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary);}',
       '.dshogq-togglelabel{color:var(--dsw-alias-label-primary);}',
       '.dshogq-toggle[data-on="false"] .dshogq-togglelabel{color:var(--dsw-alias-label-tertiary);}',
@@ -3070,6 +3071,14 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
         const [versionActive, setVersionActive] = React.useState(null);
         const updateAvailable =
           version.state.phase === 'ready' && version.state.payload !== null && version.state.payload.updateAvailable === true;
+        /* This bundle's own version, carried by every Host payload. */
+        const pluginVersion =
+          version.state.phase === 'ready' &&
+          version.state.payload !== null &&
+          version.state.payload.source !== null &&
+          typeof version.state.payload.source.version === 'string'
+            ? version.state.payload.source.version
+            : null;
         React.useEffect(() => {
           if (notice === null) return undefined;
           const timer = window.setTimeout(() => setNotice(null), NOTICE_MS);
@@ -3258,6 +3267,11 @@ const PROVIDERS_SNAPSHOT_KEY = 'opencode-go-quota:providers:v1';
                             h(ClockGlyph, null),
                           ),
                         ),
+                        /* This bundle's own version, bottom-right: the reader can tell
+                           which copy of the plugin is running without opening Go. */
+                        pluginVersion === null
+                          ? null
+                          : h('span', { className: 'dshogq-pluginver' }, 'v' + pluginVersion),
                       ),
                     },
                     /* A fixed-height body keeps the top edge still while the switch list
